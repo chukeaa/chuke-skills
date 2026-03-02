@@ -93,10 +93,29 @@
       <outline type="rss" text="aresluna.org" title="aresluna.org" xmlUrl="https://aresluna.org/main.rss" htmlUrl="https://aresluna.org"/>
       <outline type="rss" text="michael.stapelberg.ch" title="michael.stapelberg.ch" xmlUrl="https://michael.stapelberg.ch/feed.xml" htmlUrl="https://michael.stapelberg.ch"/>
       <outline type="rss" text="miguelgrinberg.com" title="miguelgrinberg.com" xmlUrl="https://blog.miguelgrinberg.com/feed" htmlUrl="https://miguelgrinberg.com"/>
-            <outline type="rss" text="keygen.sh" title="keygen.sh" xmlUrl="https://keygen.sh/blog/feed.xml" htmlUrl="https://keygen.sh"/>
+      <outline type="rss" text="keygen.sh" title="keygen.sh" xmlUrl="https://keygen.sh/blog/feed.xml" htmlUrl="https://keygen.sh"/>
       <outline type="rss" text="mjg59.dreamwidth.org" title="mjg59.dreamwidth.org" xmlUrl="https://mjg59.dreamwidth.org/data/rss" htmlUrl="https://mjg59.dreamwidth.org"/>
       <outline type="rss" text="computer.rip" title="computer.rip" xmlUrl="https://computer.rip/rss.xml" htmlUrl="https://computer.rip"/>
       <outline type="rss" text="tedunangst.com" title="tedunangst.com" xmlUrl="https://www.tedunangst.com/flak/rss" htmlUrl="https://tedunangst.com"/>
+      <outline type="rss" text="BBC News (World)" title="BBC News (World)" xmlUrl="https://feeds.bbci.co.uk/news/world/rss.xml" htmlUrl="https://www.bbc.com/news/world"/>
+      <outline type="rss" text="Al Jazeera (English)" title="Al Jazeera (English)" xmlUrl="https://www.aljazeera.com/xml/rss/all.xml" htmlUrl="https://www.aljazeera.com"/>
+      <outline type="rss" text="Bloomberg Markets" title="Bloomberg Markets" xmlUrl="https://feeds.bloomberg.com/markets/news.rss" htmlUrl="https://www.bloomberg.com/markets"/>
+      <outline type="rss" text="Bloomberg Politics" title="Bloomberg Politics" xmlUrl="https://feeds.bloomberg.com/politics/news.rss" htmlUrl="https://www.bloomberg.com/politics"/>
+      <outline type="rss" text="Bloomberg Technology" title="Bloomberg Technology" xmlUrl="https://feeds.bloomberg.com/technology/news.rss" htmlUrl="https://www.bloomberg.com/technology"/>
+      <outline type="rss" text="Bloomberg Wealth" title="Bloomberg Wealth" xmlUrl="https://feeds.bloomberg.com/wealth/news.rss" htmlUrl="https://www.bloomberg.com/wealth"/>
+      <outline type="rss" text="Financial Times (FT)" title="Financial Times (FT)" xmlUrl="https://www.ft.com/news-feed?format=rss" htmlUrl="https://www.ft.com"/>
+      <outline type="rss" text="Wall Street Journal (WSJ) World" title="Wall Street Journal (WSJ) World" xmlUrl="https://feeds.a.dj.com/rss/RSSWorldNews.xml" htmlUrl="https://www.wsj.com/news/world"/>
+      <outline type="rss" text="Nature" title="Nature" xmlUrl="https://www.nature.com/nature.rss" htmlUrl="https://www.nature.com/nature"/>
+      <outline type="rss" text="WIRED" title="WIRED" xmlUrl="https://www.wired.com/feed/rss" htmlUrl="https://www.wired.com"/>
+      <outline type="rss" text="TechCrunch" title="TechCrunch" xmlUrl="https://techcrunch.com/feed/" htmlUrl="https://techcrunch.com"/>
+      <outline type="rss" text="UN News (Global)" title="UN News (Global)" xmlUrl="https://news.un.org/feed/subscribe/en/news/region/global/feed/rss.xml" htmlUrl="https://news.un.org/en/news/region/global"/>
+      <outline type="rss" text="Science Podcast" title="Science Podcast" xmlUrl="https://feeds.megaphone.fm/AAAS8717073854" htmlUrl="https://www.science.org/podcasts/science-podcast"/>
+      <outline type="rss" text="Science First Release (Latest Online)" title="Science First Release (Latest Online)" xmlUrl="https://www.science.org/action/showFeed?type=axatoc&amp;feed=rss&amp;jc=science" htmlUrl="https://www.science.org/journal/science"/>
+      <outline type="rss" text="Science Daily Headlines" title="Science Daily Headlines" xmlUrl="https://www.science.org/rss/news_current.xml" htmlUrl="https://www.science.org/news"/>
+      <outline type="rss" text="Science Signaling Weekly Highlights" title="Science Signaling Weekly Highlights" xmlUrl="https://www.science.org/action/showFeed?type=etoc&amp;feed=rss&amp;jc=signaling" htmlUrl="https://www.science.org/journal/signaling"/>
+      <outline type="rss" text="Science Translational Medicine Weekly Highlights" title="Science Translational Medicine Weekly Highlights" xmlUrl="https://www.science.org/action/showFeed?type=etoc&amp;feed=rss&amp;jc=stm" htmlUrl="https://www.science.org/journal/stm"/>
+      <outline type="rss" text="Science Advances Latest Content" title="Science Advances Latest Content" xmlUrl="https://www.science.org/action/showFeed?type=etoc&amp;feed=rss&amp;jc=sciadv" htmlUrl="https://www.science.org/journal/sciadv"/>
+      <outline type="rss" text="Science Robotics Latest Content" title="Science Robotics Latest Content" xmlUrl="https://www.science.org/action/showFeed?type=etoc&amp;feed=rss&amp;jc=scirobotics" htmlUrl="https://www.science.org/journal/scirobotics"/>
     </outline>
   </body>
 </opml>
