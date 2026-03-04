@@ -183,7 +183,7 @@ def configure_logging() -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     run_ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    log_path = log_dir / f"kb-abstract-fetch-{run_ts}.log"
+    log_path = log_dir / f"fetch-abstract-to-kb-{run_ts}.log"
     logging.basicConfig(
         filename=str(log_path),
         filemode="w",

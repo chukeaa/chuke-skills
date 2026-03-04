@@ -288,23 +288,42 @@ def init_db(conn: sqlite3.Connection) -> None:
     )
 
 
+def is_http_url(value: str) -> bool:
+    text = normalize_space(value)
+    return bool(re.match(r"^https?://", text, flags=re.IGNORECASE))
+
+
 def choose_entry_url(row: sqlite3.Row) -> str:
     canonical_url = normalize_space(str(row["canonical_url"] or ""))
     raw_url = normalize_space(str(row["url"] or ""))
+    if is_http_url(canonical_url):
+        return canonical_url
+    if is_http_url(raw_url):
+        return raw_url
     return canonical_url or raw_url
 
 
 def fetch_html(url: str, timeout: int, max_bytes: int, user_agent: str) -> FetchResponse:
-    request = Request(
-        url,
-        headers={
-            "User-Agent": user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-    )
+    normalized_url = normalize_space(url)
+    if not re.match(r"^https?://", normalized_url, flags=re.IGNORECASE):
+        return FetchResponse(
+            ok=False,
+            source_url=url,
+            final_url=normalized_url or url,
+            http_status=None,
+            html=None,
+            error=f"invalid_url:{normalized_url or url}",
+        )
     try:
+        request = Request(
+            normalized_url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
         with urlopen(request, timeout=timeout) as response:
-            final_url = str(response.geturl() or url)
+            final_url = str(response.geturl() or normalized_url)
             http_status_raw = response.getcode()
             http_status = int(http_status_raw) if http_status_raw is not None else 200
             content_type = str(response.headers.get("Content-Type") or "").lower()
@@ -352,18 +371,27 @@ def fetch_html(url: str, timeout: int, max_bytes: int, user_agent: str) -> Fetch
             )
     except HTTPError as exc:
         return FetchResponse(
+                    ok=False,
+                    source_url=url,
+                    final_url=str(exc.geturl() or url),
+                    http_status=int(exc.code) if exc.code is not None else None,
+                    html=None,
+                    error=f"http_error:{exc.code}",
+                )
+    except ValueError as exc:
+        return FetchResponse(
             ok=False,
             source_url=url,
-            final_url=str(exc.geturl() or url),
-            http_status=int(exc.code) if exc.code is not None else None,
+            final_url=normalized_url or url,
+            http_status=None,
             html=None,
-            error=f"http_error:{exc.code}",
+            error=f"invalid_url:{exc}",
         )
     except URLError as exc:
         return FetchResponse(
             ok=False,
             source_url=url,
-            final_url=url,
+            final_url=normalized_url or url,
             http_status=None,
             html=None,
             error=f"url_error:{exc.reason}",
@@ -372,7 +400,7 @@ def fetch_html(url: str, timeout: int, max_bytes: int, user_agent: str) -> Fetch
         return FetchResponse(
             ok=False,
             source_url=url,
-            final_url=url,
+            final_url=normalized_url or url,
             http_status=None,
             html=None,
             error="timeout",
@@ -381,7 +409,7 @@ def fetch_html(url: str, timeout: int, max_bytes: int, user_agent: str) -> Fetch
         return FetchResponse(
             ok=False,
             source_url=url,
-            final_url=url,
+            final_url=normalized_url or url,
             http_status=None,
             html=None,
             error=f"unexpected_fetch_error:{exc}",

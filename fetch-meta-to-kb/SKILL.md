@@ -1,15 +1,15 @@
 ---
-name: kb-meta-fetch
+name: fetch-meta-to-kb
 description: Fetch journal articles from Crossref published after a user-specified date and insert them into PostgreSQL `journals` with DOI deduplication. Use when incrementally ingesting journal metadata from `journals_issn` into `journals`.
 ---
 
-# KB Meta Fetch
+# Fetch Meta to KB
 
 ## Core Goal
 - Pull `journal-article` records from Crossref after a given `--from-date`.
 - Read ISSN seed rows from `journals_issn` (`journal`, `issn1`).
 - Insert rows into `journals` with `ON CONFLICT (doi) DO NOTHING`.
-- Keep the implementation aligned with `1_crossref_multi_increment.py`.
+- Keep the implementation aligned with `fetch_meta_to_kb.py`.
 
 ## Run Workflow
 1. Set database connection env vars (user-managed keys prefixed with `KB_`):
@@ -23,17 +23,17 @@ description: Fetch journal articles from Crossref published after a user-specifi
 2. Run incremental fetch with a required date:
 
 ```bash
-python3 scripts/crossref_multi_increment.py --from-date 2024-05-01
+python3 scripts/fetch_meta_to_kb.py --from-date 2024-05-01
 ```
 
 - If executing through an `exec` tool call, set timeout to **1800 seconds (30 minutes)**.
 
 3. Check logs in:
-- `${KB_LOG_DIR}/crossref-YYYYMMDD-HHMMSS.log` (UTC timestamp, one file per run)
+- `${KB_LOG_DIR}/fetch-meta-to-kb-YYYYMMDD-HHMMSS.log` (UTC timestamp, one file per run)
 
 4. Build user-facing summary strictly from the current run output:
-- Prefer `RUN_SUMMARY_JSON` emitted by `crossref_multi_increment.py`.
-- If JSON is unavailable, parse only this run's `${KB_LOG_DIR}/crossref-YYYYMMDD-HHMMSS.log`.
+- Prefer `RUN_SUMMARY_JSON` emitted by `fetch_meta_to_kb.py`.
+- If JSON is unavailable, parse only this run's `${KB_LOG_DIR}/fetch-meta-to-kb-YYYYMMDD-HHMMSS.log`.
 - `total_inserted` must mean rows inserted in this run (after DOI dedup), not cumulative rows in table.
 
 ## Behavior Contract
@@ -49,4 +49,4 @@ python3 scripts/crossref_multi_increment.py --from-date 2024-05-01
 - Implement only Crossref incremental fetch + insert into `journals`.
 
 ## Script
-- `scripts/crossref_multi_increment.py`
+- `scripts/fetch_meta_to_kb.py`

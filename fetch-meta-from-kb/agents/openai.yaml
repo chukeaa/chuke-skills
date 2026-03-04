@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fetch Meta from KB"
+  short_description: "Direct DB JSON fetch from journals"
+  default_prompt: "Use $fetch-meta-from-kb to fetch recent journals rows from PostgreSQL and return JSON with doi, title, abstract, and date."

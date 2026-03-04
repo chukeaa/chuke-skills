@@ -27,7 +27,7 @@ def configure_logging():
     log_dir.mkdir(parents=True, exist_ok=True)
 
     run_ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    log_filename = f"crossref-{run_ts}.log"
+    log_filename = f"fetch-meta-to-kb-{run_ts}.log"
     log_path = log_dir / log_filename
 
     logging.basicConfig(

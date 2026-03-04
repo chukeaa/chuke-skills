@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fetch Meta to KB"
+  short_description: "Fetch Crossref metadata into journals"
+  default_prompt: "Use $fetch-meta-to-kb to fetch Crossref journal articles after a given date and insert them into PostgreSQL journals with DOI deduplication."

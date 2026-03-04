@@ -1,12 +1,12 @@
 ---
-name: kb-abstract-fetch
-description: Fetch and backfill missing `abstract` values from PostgreSQL `journals` by opening DOI redirect pages (`https://doi.org/{doi}`) with OpenClaw Browser and extracting page abstracts. Use when `kb-meta-fetch` has inserted metadata rows with empty abstract and you need latest-created rows processed in controlled batches (default 100) with dry-run and safe-write guards.
+name: fetch-abstract-to-kb
+description: Fetch and backfill missing `abstract` values from PostgreSQL `journals` by opening DOI redirect pages (`https://doi.org/{doi}`) with OpenClaw Browser and extracting page abstracts. Use when `fetch-meta-to-kb` has inserted metadata rows with empty abstract and you need latest-created rows processed in controlled batches (default 100) with dry-run and safe-write guards.
 ---
 
-# KB Abstract Fetch
+# Fetch Abstract to KB
 
 ## Core Goal
-- Reuse the same PostgreSQL connection env variables as `kb-meta-fetch`.
+- Reuse the same PostgreSQL connection env variables as `fetch-meta-to-kb`.
 - Select rows whose `abstract` is empty and order by newest `created_at` first.
 - Open `https://doi.org/<doi>` in OpenClaw Browser and extract abstract text.
 - Write back only when the row is still empty at update time.
@@ -24,25 +24,25 @@ description: Fetch and backfill missing `abstract` values from PostgreSQL `journ
 1. Run local self-test first (no DB/browser required):
 
 ```bash
-python3 scripts/kb_abstract_fetch.py --self-test
+python3 scripts/fetch_abstract_to_kb.py --self-test
 ```
 
 2. Dry run first (default mode; no DB write):
 
 ```bash
-python3 scripts/kb_abstract_fetch.py --limit 100
+python3 scripts/fetch_abstract_to_kb.py --limit 100
 ```
 
 3. Apply updates after review:
 
 ```bash
-python3 scripts/kb_abstract_fetch.py --limit 100 --apply
+python3 scripts/fetch_abstract_to_kb.py --limit 100 --apply
 ```
 
 4. Override table/column names when needed (`created_at` is fixed and required):
 
 ```bash
-python3 scripts/kb_abstract_fetch.py \
+python3 scripts/fetch_abstract_to_kb.py \
   --table journals \
   --doi-column doi \
   --abstract-column abstract \
@@ -69,4 +69,4 @@ python3 scripts/kb_abstract_fetch.py \
 - If start fails (for example extension tab not attached), attach OpenClaw browser session first, then rerun.
 
 ## Script
-- `scripts/kb_abstract_fetch.py`
+- `scripts/fetch_abstract_to_kb.py`
