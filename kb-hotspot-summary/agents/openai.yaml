@@ -1,0 +1,4 @@
+interface:
+  display_name: "KB Hotspot Summary"
+  short_description: "OpenAI topic DOI filter + hotspot summary"
+  default_prompt: "Use $kb-hotspot-summary with OPENAI_API_KEY configured to filter recent journal DOI+title candidates by topic (default carbon emissions/LCA/environmental impact), then generate a bilingual hotspot report or export selected-abstract.json."
