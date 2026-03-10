@@ -1,0 +1,4 @@
+interface:
+  display_name: "Synology File Station"
+  short_description: "Synology File Station API file operations"
+  default_prompt: "Use $synology-file-station to run Synology File Station file operations with env-based login and JSON output."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Document Granular Decompose"
+  short_description: "Parse docs to fulltext via MinerU"
+  default_prompt: "Use $document-granular-decompose to call /mineru_with_images with return_txt=true and return fulltext only from the response."
