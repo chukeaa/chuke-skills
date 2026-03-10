@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenAQ Data Fetch"
+  short_description: "Fetch OpenAQ API and S3 data with automatic source routing"
+  default_prompt: "Use $openaq-data-fetch to query OpenAQ metadata/measurements via API or backfill bulk records from the OpenAQ S3 archive."
