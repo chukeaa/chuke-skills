@@ -14,6 +14,7 @@ Keep these phases separate:
 3. expert raw collection
    - sociologist and environmentalist execute fetch commands
    - only `raw/` artifacts are written
+   - manifest-backed sources may also write sidecar downloads under `raw/<source>/`, for example GDELT table ZIP files referenced by a canonical manifest JSON
 4. deterministic data plane
    - normalize
    - link evidence

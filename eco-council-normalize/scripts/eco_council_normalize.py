@@ -9,6 +9,7 @@ import os
 import gzip
 import hashlib
 import importlib.util
+import io
 import json
 import math
 import re
@@ -21,6 +22,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
@@ -31,11 +33,14 @@ CONTRACT_SCRIPT_PATH = SKILL_DIR.parent / "eco-council-data-contract" / "scripts
 
 SCHEMA_VERSION = "1.0.0"
 POINT_MATCH_EPSILON_DEGREES = 0.05
-NORMALIZE_CACHE_VERSION = "v2"
+NORMALIZE_CACHE_VERSION = "v3"
 MAX_CONTEXT_TASKS = 4
 MAX_CONTEXT_CLAIMS = 4
 MAX_CONTEXT_OBSERVATIONS = 8
 MAX_CONTEXT_EVIDENCE = 4
+GDELT_SCAN_ROW_LIMIT = 25000
+GDELT_EXAMPLE_SIGNAL_LIMIT = 3
+GDELT_MATCHED_ROW_STORE_LIMIT = 32
 PHYSICAL_CLAIM_TYPES = {
     "wildfire",
     "smoke",
@@ -44,6 +49,11 @@ PHYSICAL_CLAIM_TYPES = {
     "drought",
     "air-pollution",
     "water-pollution",
+}
+NON_CLAIM_PUBLIC_SIGNAL_KINDS = {
+    "artifact-manifest",
+    "table-coverage",
+    "timeline-bin",
 }
 STOPWORDS = {
     "a",
@@ -201,6 +211,49 @@ USGS_PARAMETER_METRIC_MAP = {
     "00060": "river_discharge",
     "00065": "gage_height",
 }
+GDELT_EVENTS_INDEX = {
+    "event_id": 0,
+    "sql_date": 1,
+    "actor1_name": 6,
+    "actor2_name": 16,
+    "event_code": 26,
+    "event_base_code": 27,
+    "event_root_code": 28,
+    "goldstein": 30,
+    "num_mentions": 31,
+    "num_sources": 32,
+    "num_articles": 33,
+    "avg_tone": 34,
+    "action_geo_name": 52,
+    "action_geo_country": 53,
+    "action_geo_lat": 56,
+    "action_geo_lon": 57,
+    "date_added": 59,
+    "source_url": 60,
+}
+GDELT_MENTIONS_INDEX = {
+    "event_id": 0,
+    "event_time": 1,
+    "mention_time": 2,
+    "mention_type": 3,
+    "source_name": 4,
+    "identifier": 5,
+    "confidence": 11,
+    "doc_length": 12,
+    "doc_tone": 13,
+}
+GDELT_GKG_INDEX = {
+    "record_id": 0,
+    "date": 1,
+    "source_common_name": 3,
+    "document_identifier": 4,
+    "themes": 8,
+    "locations": 10,
+    "persons": 12,
+    "organizations": 14,
+    "tone": 15,
+    "all_names": 23,
+}
 
 
 def utc_now_iso() -> str:
@@ -329,7 +382,7 @@ def parse_loose_datetime(value: Any) -> datetime | None:
     except ValueError:
         pass
 
-    for pattern in ("%Y%m%d%H%M%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+    for pattern in ("%Y%m%d%H%M%S", "%Y%m%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
         try:
             parsed = datetime.strptime(text, pattern)
             parsed = parsed.replace(tzinfo=timezone.utc)
@@ -372,6 +425,18 @@ def stable_hash(*parts: Any) -> str:
 
 def stable_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True)
+
+
+def text_tokens(value: Any, *, minimum_length: int = 4) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", maybe_text(value).casefold())
+    output: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if len(token) < minimum_length or token in STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        output.append(token)
+    return output
 
 
 def parse_round_components(round_id: str) -> tuple[str, int, int] | None:
@@ -527,6 +592,73 @@ def geometry_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
         or left_north < right_south
         or right_north < left_south
     )
+
+
+def point_matches_geometry(latitude: float | None, longitude: float | None, geometry: dict[str, Any]) -> bool:
+    if latitude is None or longitude is None:
+        return False
+    return geometry_overlap(
+        {"type": "Point", "latitude": latitude, "longitude": longitude},
+        geometry,
+    )
+
+
+def mission_region_tokens(mission: dict[str, Any]) -> list[str]:
+    return text_tokens(mission_place_scope(mission).get("label"), minimum_length=3)
+
+
+def mission_topic_tokens(mission: dict[str, Any]) -> list[str]:
+    ignored = set(mission_region_tokens(mission))
+    values: list[Any] = [mission.get("topic"), mission.get("objective")]
+    hypotheses = mission.get("hypotheses")
+    if isinstance(hypotheses, list):
+        values.extend(item for item in hypotheses if item is not None)
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for token in text_tokens(value, minimum_length=4):
+            if token in ignored or token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+    return tokens
+
+
+def row_token_set(*parts: Any, minimum_length: int = 3) -> set[str]:
+    tokens: set[str] = set()
+    for part in parts:
+        tokens.update(text_tokens(part, minimum_length=minimum_length))
+    return tokens
+
+
+def source_domain(value: str) -> str:
+    text = maybe_text(value)
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    domain = parsed.netloc or parsed.path
+    domain = domain.casefold()
+    return domain[4:] if domain.startswith("www.") else domain
+
+
+def top_counter_items(counter: Counter[str], limit: int = 5) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for key, count in counter.most_common(limit):
+        if not key or count <= 0:
+            continue
+        items.append({"value": key, "count": count})
+    return items
+
+
+def top_counter_text(counter: Counter[str], limit: int = 3) -> str:
+    parts = [f"{item['value']} ({item['count']})" for item in top_counter_items(counter, limit=limit)]
+    return ", ".join(parts)
+
+
+def maybe_mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return round(statistics.fmean(values), 3)
 
 
 def time_windows_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -1257,56 +1389,782 @@ def normalize_public_from_gdelt_doc(
     return signals
 
 
-def normalize_public_from_gdelt_manifest(
+def gdelt_row_value(row: list[str], index: int) -> str:
+    if index < 0 or index >= len(row):
+        return ""
+    return maybe_text(row[index])
+
+
+def iter_zip_tsv_rows(path: Path, *, max_rows: int = GDELT_SCAN_ROW_LIMIT) -> tuple[str, list[list[str]], bool]:
+    with zipfile.ZipFile(path) as archive:
+        member_names = [name for name in archive.namelist() if not name.endswith("/")]
+        if not member_names:
+            return ("", [], True)
+        member_name = member_names[0]
+        rows: list[list[str]] = []
+        scan_complete = True
+        with archive.open(member_name, "r") as raw_handle:
+            with io.TextIOWrapper(raw_handle, encoding="utf-8", newline="") as handle:
+                reader = csv.reader(handle, delimiter="\t")
+                for row in reader:
+                    if not row:
+                        continue
+                    if len(rows) >= max_rows:
+                        scan_complete = False
+                        break
+                    rows.append([maybe_text(item) for item in row])
+    return (member_name, rows, scan_complete)
+
+
+def manifest_download_records(payload: Any) -> list[tuple[int, dict[str, Any]]]:
+    if not isinstance(payload, dict):
+        return []
+    downloads = payload.get("downloads")
+    if not isinstance(downloads, list):
+        return []
+    output: list[tuple[int, dict[str, Any]]] = []
+    for index, item in enumerate(downloads):
+        if isinstance(item, dict):
+            output.append((index, item))
+    return output
+
+
+def manifest_latest_timestamp(payload: Any) -> str | None:
+    latest: datetime | None = None
+    for _index, item in manifest_download_records(payload):
+        entry = item.get("entry") if isinstance(item.get("entry"), dict) else {}
+        candidate = parse_loose_datetime(entry.get("timestamp_utc") or entry.get("timestamp_raw"))
+        if candidate is None:
+            continue
+        if latest is None or candidate > latest:
+            latest = candidate
+    return to_rfc3339_z(latest)
+
+
+def gdelt_theme_values(value: Any) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in maybe_text(value).split(";"):
+        text = maybe_text(item)
+        if not text:
+            continue
+        primary = re.split(r"[,#]", text, maxsplit=1)[0].replace("_", " ").strip()
+        normalized = maybe_text(primary)
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(normalized)
+    return output
+
+
+def gdelt_name_values(value: Any) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in maybe_text(value).split(";"):
+        text = maybe_text(item)
+        if not text:
+            continue
+        primary = re.split(r"[,#]", text, maxsplit=1)[0].strip()
+        normalized = maybe_text(primary)
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(normalized)
+    return output
+
+
+def gdelt_gkg_locations(value: Any) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    for item in maybe_text(value).split(";"):
+        text = maybe_text(item)
+        if not text:
+            continue
+        parts = text.split("#")
+        if len(parts) >= 2:
+            name = maybe_text(parts[1])
+            latitude = maybe_number(parts[5]) if len(parts) > 5 else None
+            longitude = maybe_number(parts[6]) if len(parts) > 6 else None
+        else:
+            name = text
+            latitude = None
+            longitude = None
+        locations.append({"name": name, "latitude": latitude, "longitude": longitude})
+    return locations
+
+
+def gdelt_first_tone(value: Any) -> float | None:
+    parts = maybe_text(value).split(",")
+    if not parts:
+        return None
+    return maybe_number(parts[0])
+
+
+def push_ranked_example(bucket: list[dict[str, Any]], example: dict[str, Any]) -> None:
+    bucket.append(example)
+    bucket.sort(key=lambda item: item.get("_rank", (0, 0, 0, "")), reverse=True)
+    del bucket[GDELT_MATCHED_ROW_STORE_LIMIT:]
+
+
+def gdelt_coverage_signal(
+    *,
+    run_id: str,
+    round_id: str,
+    source_skill: str,
+    path: Path,
+    sha256_value: str,
+    title: str,
+    text: str,
+    published_at_utc: str | None,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    return make_public_signal(
+        run_id=run_id,
+        round_id=round_id,
+        source_skill=source_skill,
+        signal_kind="table-coverage",
+        external_id=f"{source_skill}:coverage:{maybe_text(path.name)}",
+        title=title,
+        text=text,
+        url="",
+        author_name="",
+        channel_name=source_skill,
+        language="",
+        query_text="",
+        published_at_utc=published_at_utc,
+        engagement={},
+        metadata=metadata,
+        artifact_path=path,
+        record_locator="$.downloads[*]",
+        sha256_value=sha256_value,
+        raw_obj=metadata,
+    )
+
+
+def normalize_public_from_gdelt_events_manifest(
     path: Path,
     payload: Any,
     *,
+    mission: dict[str, Any],
     run_id: str,
     round_id: str,
     source_skill: str,
     sha256_value: str,
 ) -> list[dict[str, Any]]:
-    signals: list[dict[str, Any]] = []
-    if not isinstance(payload, dict):
-        return signals
-    downloads = payload.get("downloads")
-    if not isinstance(downloads, list):
-        return signals
-    for index, item in enumerate(downloads):
-        if not isinstance(item, dict):
+    mission_scope = mission_place_scope(mission)
+    mission_geometry = mission_scope.get("geometry") if isinstance(mission_scope.get("geometry"), dict) else {}
+    region_tokens = mission_region_tokens(mission)
+    topic_tokens = mission_topic_tokens(mission)
+    location_counter: Counter[str] = Counter()
+    event_counter: Counter[str] = Counter()
+    domain_counter: Counter[str] = Counter()
+    tones: list[float] = []
+    published_candidates: list[datetime] = []
+    top_examples: list[dict[str, Any]] = []
+    scanned_rows = 0
+    matched_rows = 0
+    total_mentions = 0
+    total_articles = 0
+    readable_files = 0
+    missing_files = 0
+    scan_complete = True
+
+    for download_index, item in manifest_download_records(payload):
+        output_path_text = maybe_text(item.get("output_path"))
+        if not output_path_text:
+            missing_files += 1
             continue
-        output_path = maybe_text(item.get("output_path"))
-        title = maybe_text(item.get("filename") or Path(output_path).name or "GDELT artifact")
+        output_path = Path(output_path_text).expanduser().resolve()
+        if not output_path.exists():
+            missing_files += 1
+            continue
+        try:
+            member_name, rows, file_complete = iter_zip_tsv_rows(output_path)
+        except (OSError, ValueError, zipfile.BadZipFile):
+            missing_files += 1
+            continue
+        readable_files += 1
+        scan_complete = scan_complete and file_complete
+        for row_index, row in enumerate(rows):
+            scanned_rows += 1
+            if len(row) <= GDELT_EVENTS_INDEX["source_url"]:
+                continue
+            source_url = gdelt_row_value(row, GDELT_EVENTS_INDEX["source_url"])
+            action_geo_name = gdelt_row_value(row, GDELT_EVENTS_INDEX["action_geo_name"])
+            latitude = maybe_number(gdelt_row_value(row, GDELT_EVENTS_INDEX["action_geo_lat"]))
+            longitude = maybe_number(gdelt_row_value(row, GDELT_EVENTS_INDEX["action_geo_lon"]))
+            token_set = row_token_set(
+                gdelt_row_value(row, GDELT_EVENTS_INDEX["actor1_name"]),
+                gdelt_row_value(row, GDELT_EVENTS_INDEX["actor2_name"]),
+                action_geo_name,
+                source_url,
+                minimum_length=3,
+            )
+            region_match = point_matches_geometry(latitude, longitude, mission_geometry) or any(
+                token in token_set for token in region_tokens
+            )
+            topic_hits = sum(1 for token in topic_tokens if token in token_set)
+            if not region_match or (topic_tokens and topic_hits == 0):
+                continue
+
+            matched_rows += 1
+            event_code = gdelt_row_value(row, GDELT_EVENTS_INDEX["event_base_code"]) or gdelt_row_value(
+                row, GDELT_EVENTS_INDEX["event_code"]
+            )
+            domain = source_domain(source_url)
+            mentions = int(maybe_number(gdelt_row_value(row, GDELT_EVENTS_INDEX["num_mentions"])) or 0)
+            articles = int(maybe_number(gdelt_row_value(row, GDELT_EVENTS_INDEX["num_articles"])) or 0)
+            tone = maybe_number(gdelt_row_value(row, GDELT_EVENTS_INDEX["avg_tone"]))
+            published_at = to_rfc3339_z(
+                parse_loose_datetime(gdelt_row_value(row, GDELT_EVENTS_INDEX["date_added"]))
+                or parse_loose_datetime(gdelt_row_value(row, GDELT_EVENTS_INDEX["sql_date"]))
+            )
+            published_dt = parse_loose_datetime(published_at)
+            if published_dt is not None:
+                published_candidates.append(published_dt)
+            location_counter[action_geo_name or "unknown"] += 1
+            event_counter[event_code or "unknown"] += 1
+            if domain:
+                domain_counter[domain] += 1
+            total_mentions += mentions
+            total_articles += articles
+            if tone is not None:
+                tones.append(tone)
+
+            example_title = action_geo_name or "Mission-aligned GDELT event"
+            example_text = normalize_space(
+                " ".join(
+                    part
+                    for part in (
+                        f"event_code={event_code}" if event_code else "",
+                        gdelt_row_value(row, GDELT_EVENTS_INDEX["actor1_name"]),
+                        gdelt_row_value(row, GDELT_EVENTS_INDEX["actor2_name"]),
+                        f"mentions={mentions}",
+                        f"articles={articles}",
+                        f"tone={tone}" if tone is not None else "",
+                    )
+                    if part
+                )
+            )
+            push_ranked_example(
+                top_examples,
+                {
+                    "_rank": (topic_hits, mentions, articles, published_at or ""),
+                    "title": f"GDELT event at {example_title}",
+                    "text": example_text,
+                    "url": source_url,
+                    "channel_name": domain,
+                    "published_at_utc": published_at,
+                    "record_locator": f"$.downloads[{download_index}].{member_name}[{row_index}]",
+                    "metadata": {
+                        "download_output_path": str(output_path),
+                        "zip_member": member_name,
+                        "event_id": gdelt_row_value(row, GDELT_EVENTS_INDEX["event_id"]),
+                        "event_code": gdelt_row_value(row, GDELT_EVENTS_INDEX["event_code"]),
+                        "event_base_code": event_code,
+                        "event_root_code": gdelt_row_value(row, GDELT_EVENTS_INDEX["event_root_code"]),
+                        "action_geo_name": action_geo_name,
+                        "action_geo_country": gdelt_row_value(row, GDELT_EVENTS_INDEX["action_geo_country"]),
+                        "num_mentions": mentions,
+                        "num_sources": int(maybe_number(gdelt_row_value(row, GDELT_EVENTS_INDEX["num_sources"])) or 0),
+                        "num_articles": articles,
+                        "avg_tone": tone,
+                    },
+                    "raw_json": {
+                        "event_id": gdelt_row_value(row, GDELT_EVENTS_INDEX["event_id"]),
+                        "sql_date": gdelt_row_value(row, GDELT_EVENTS_INDEX["sql_date"]),
+                        "actor1_name": gdelt_row_value(row, GDELT_EVENTS_INDEX["actor1_name"]),
+                        "actor2_name": gdelt_row_value(row, GDELT_EVENTS_INDEX["actor2_name"]),
+                        "event_code": gdelt_row_value(row, GDELT_EVENTS_INDEX["event_code"]),
+                        "event_base_code": event_code,
+                        "event_root_code": gdelt_row_value(row, GDELT_EVENTS_INDEX["event_root_code"]),
+                        "action_geo_name": action_geo_name,
+                        "action_geo_lat": latitude,
+                        "action_geo_lon": longitude,
+                        "source_url": source_url,
+                    },
+                },
+            )
+
+    coverage_metadata = {
+        "matched_row_count": matched_rows,
+        "scanned_row_count": scanned_rows,
+        "readable_file_count": readable_files,
+        "missing_file_count": missing_files,
+        "scan_complete": scan_complete,
+        "total_mentions": total_mentions,
+        "total_articles": total_articles,
+        "avg_tone": maybe_mean(tones),
+        "top_locations": top_counter_items(location_counter),
+        "top_event_codes": top_counter_items(event_counter),
+        "top_domains": top_counter_items(domain_counter),
+        "region_tokens": region_tokens,
+        "topic_tokens": topic_tokens,
+    }
+    coverage_text = (
+        f"Scanned {scanned_rows} event rows across {readable_files} readable ZIP files; matched {matched_rows} rows. "
+        f"Top locations: {top_counter_text(location_counter) or 'n/a'}. "
+        f"Top event codes: {top_counter_text(event_counter) or 'n/a'}. "
+        f"Top domains: {top_counter_text(domain_counter) or 'n/a'}."
+    )
+    coverage_published_at = manifest_latest_timestamp(payload)
+    if coverage_published_at is None and published_candidates:
+        coverage_published_at = to_rfc3339_z(max(published_candidates))
+    signals = [
+        gdelt_coverage_signal(
+            run_id=run_id,
+            round_id=round_id,
+            source_skill=source_skill,
+            path=path,
+            sha256_value=sha256_value,
+            title="GDELT Events table coverage",
+            text=coverage_text,
+            published_at_utc=coverage_published_at,
+            metadata=coverage_metadata,
+        )
+    ]
+    for example_index, example in enumerate(top_examples[:GDELT_EXAMPLE_SIGNAL_LIMIT]):
         signals.append(
             make_public_signal(
                 run_id=run_id,
                 round_id=round_id,
                 source_skill=source_skill,
-                signal_kind="artifact-manifest",
-                external_id=title,
-                title=title,
-                text="",
-                url=maybe_text(item.get("url")),
+                signal_kind="event-record",
+                external_id=f"{source_skill}:{example_index}:{maybe_text(example['record_locator'])}",
+                title=maybe_text(example.get("title")),
+                text=maybe_text(example.get("text")),
+                url=maybe_text(example.get("url")),
                 author_name="",
-                channel_name="",
+                channel_name=maybe_text(example.get("channel_name")),
                 language="",
-                query_text="",
-                published_at_utc=to_rfc3339_z(parse_loose_datetime(item.get("timestamp"))),
+                query_text=maybe_text(mission.get("topic")),
+                published_at_utc=example.get("published_at_utc"),
                 engagement={},
-                metadata=item,
+                metadata=example.get("metadata") if isinstance(example.get("metadata"), dict) else {},
                 artifact_path=path,
-                record_locator=f"$.downloads[{index}]",
+                record_locator=maybe_text(example.get("record_locator")),
                 sha256_value=sha256_value,
-                raw_obj=item,
+                raw_obj=example.get("raw_json"),
             )
         )
     return signals
+
+
+def normalize_public_from_gdelt_mentions_manifest(
+    path: Path,
+    payload: Any,
+    *,
+    mission: dict[str, Any],
+    run_id: str,
+    round_id: str,
+    source_skill: str,
+    sha256_value: str,
+) -> list[dict[str, Any]]:
+    region_tokens = mission_region_tokens(mission)
+    topic_tokens = mission_topic_tokens(mission)
+    source_counter: Counter[str] = Counter()
+    domain_counter: Counter[str] = Counter()
+    event_counter: Counter[str] = Counter()
+    confidence_values: list[float] = []
+    tone_values: list[float] = []
+    top_examples: list[dict[str, Any]] = []
+    scanned_rows = 0
+    matched_rows = 0
+    readable_files = 0
+    missing_files = 0
+    scan_complete = True
+
+    for download_index, item in manifest_download_records(payload):
+        output_path_text = maybe_text(item.get("output_path"))
+        if not output_path_text:
+            missing_files += 1
+            continue
+        output_path = Path(output_path_text).expanduser().resolve()
+        if not output_path.exists():
+            missing_files += 1
+            continue
+        try:
+            member_name, rows, file_complete = iter_zip_tsv_rows(output_path)
+        except (OSError, ValueError, zipfile.BadZipFile):
+            missing_files += 1
+            continue
+        readable_files += 1
+        scan_complete = scan_complete and file_complete
+        for row_index, row in enumerate(rows):
+            scanned_rows += 1
+            if len(row) <= GDELT_MENTIONS_INDEX["doc_tone"]:
+                continue
+            source_name = gdelt_row_value(row, GDELT_MENTIONS_INDEX["source_name"])
+            identifier = gdelt_row_value(row, GDELT_MENTIONS_INDEX["identifier"])
+            token_set = row_token_set(source_name, identifier, minimum_length=3)
+            region_match = any(token in token_set for token in region_tokens)
+            topic_hits = sum(1 for token in topic_tokens if token in token_set)
+            if not region_match or (topic_tokens and topic_hits == 0):
+                continue
+
+            matched_rows += 1
+            domain = source_domain(identifier)
+            confidence = maybe_number(gdelt_row_value(row, GDELT_MENTIONS_INDEX["confidence"]))
+            tone = maybe_number(gdelt_row_value(row, GDELT_MENTIONS_INDEX["doc_tone"]))
+            published_at = to_rfc3339_z(parse_loose_datetime(gdelt_row_value(row, GDELT_MENTIONS_INDEX["mention_time"])))
+            source_counter[source_name or "unknown"] += 1
+            event_counter[gdelt_row_value(row, GDELT_MENTIONS_INDEX["event_id"]) or "unknown"] += 1
+            if domain:
+                domain_counter[domain] += 1
+            if confidence is not None:
+                confidence_values.append(confidence)
+            if tone is not None:
+                tone_values.append(tone)
+
+            push_ranked_example(
+                top_examples,
+                {
+                    "_rank": (
+                        topic_hits,
+                        int(confidence or 0),
+                        int(maybe_number(gdelt_row_value(row, GDELT_MENTIONS_INDEX["doc_length"])) or 0),
+                        published_at or "",
+                    ),
+                    "title": f"GDELT mention from {source_name or domain or 'unknown source'}",
+                    "text": normalize_space(
+                        " ".join(
+                            part
+                            for part in (
+                                f"mention_type={gdelt_row_value(row, GDELT_MENTIONS_INDEX['mention_type'])}",
+                                f"confidence={confidence}" if confidence is not None else "",
+                                f"tone={tone}" if tone is not None else "",
+                                identifier,
+                            )
+                            if part
+                        )
+                    ),
+                    "url": identifier,
+                    "channel_name": domain or source_name,
+                    "published_at_utc": published_at,
+                    "record_locator": f"$.downloads[{download_index}].{member_name}[{row_index}]",
+                    "metadata": {
+                        "download_output_path": str(output_path),
+                        "zip_member": member_name,
+                        "event_id": gdelt_row_value(row, GDELT_MENTIONS_INDEX["event_id"]),
+                        "mention_type": gdelt_row_value(row, GDELT_MENTIONS_INDEX["mention_type"]),
+                        "source_name": source_name,
+                        "confidence": confidence,
+                        "doc_length": maybe_number(gdelt_row_value(row, GDELT_MENTIONS_INDEX["doc_length"])),
+                        "doc_tone": tone,
+                    },
+                    "raw_json": {
+                        "event_id": gdelt_row_value(row, GDELT_MENTIONS_INDEX["event_id"]),
+                        "event_time": gdelt_row_value(row, GDELT_MENTIONS_INDEX["event_time"]),
+                        "mention_time": gdelt_row_value(row, GDELT_MENTIONS_INDEX["mention_time"]),
+                        "mention_type": gdelt_row_value(row, GDELT_MENTIONS_INDEX["mention_type"]),
+                        "source_name": source_name,
+                        "identifier": identifier,
+                    },
+                },
+            )
+
+    coverage_metadata = {
+        "matched_row_count": matched_rows,
+        "scanned_row_count": scanned_rows,
+        "readable_file_count": readable_files,
+        "missing_file_count": missing_files,
+        "scan_complete": scan_complete,
+        "avg_confidence": maybe_mean(confidence_values),
+        "avg_tone": maybe_mean(tone_values),
+        "top_sources": top_counter_items(source_counter),
+        "top_domains": top_counter_items(domain_counter),
+        "top_event_ids": top_counter_items(event_counter),
+        "region_tokens": region_tokens,
+        "topic_tokens": topic_tokens,
+    }
+    coverage_text = (
+        f"Scanned {scanned_rows} mention rows across {readable_files} readable ZIP files; matched {matched_rows} rows. "
+        f"Top sources: {top_counter_text(source_counter) or 'n/a'}. "
+        f"Top domains: {top_counter_text(domain_counter) or 'n/a'}."
+    )
+    signals = [
+        gdelt_coverage_signal(
+            run_id=run_id,
+            round_id=round_id,
+            source_skill=source_skill,
+            path=path,
+            sha256_value=sha256_value,
+            title="GDELT Mentions table coverage",
+            text=coverage_text,
+            published_at_utc=manifest_latest_timestamp(payload),
+            metadata=coverage_metadata,
+        )
+    ]
+    for example_index, example in enumerate(top_examples[:GDELT_EXAMPLE_SIGNAL_LIMIT]):
+        signals.append(
+            make_public_signal(
+                run_id=run_id,
+                round_id=round_id,
+                source_skill=source_skill,
+                signal_kind="mention-record",
+                external_id=f"{source_skill}:{example_index}:{maybe_text(example['record_locator'])}",
+                title=maybe_text(example.get("title")),
+                text=maybe_text(example.get("text")),
+                url=maybe_text(example.get("url")),
+                author_name="",
+                channel_name=maybe_text(example.get("channel_name")),
+                language="",
+                query_text=maybe_text(mission.get("topic")),
+                published_at_utc=example.get("published_at_utc"),
+                engagement={},
+                metadata=example.get("metadata") if isinstance(example.get("metadata"), dict) else {},
+                artifact_path=path,
+                record_locator=maybe_text(example.get("record_locator")),
+                sha256_value=sha256_value,
+                raw_obj=example.get("raw_json"),
+            )
+        )
+    return signals
+
+
+def normalize_public_from_gdelt_gkg_manifest(
+    path: Path,
+    payload: Any,
+    *,
+    mission: dict[str, Any],
+    run_id: str,
+    round_id: str,
+    source_skill: str,
+    sha256_value: str,
+) -> list[dict[str, Any]]:
+    mission_scope = mission_place_scope(mission)
+    mission_geometry = mission_scope.get("geometry") if isinstance(mission_scope.get("geometry"), dict) else {}
+    region_tokens = mission_region_tokens(mission)
+    topic_tokens = mission_topic_tokens(mission)
+    theme_counter: Counter[str] = Counter()
+    location_counter: Counter[str] = Counter()
+    organization_counter: Counter[str] = Counter()
+    domain_counter: Counter[str] = Counter()
+    tone_values: list[float] = []
+    top_examples: list[dict[str, Any]] = []
+    scanned_rows = 0
+    matched_rows = 0
+    readable_files = 0
+    missing_files = 0
+    scan_complete = True
+
+    for download_index, item in manifest_download_records(payload):
+        output_path_text = maybe_text(item.get("output_path"))
+        if not output_path_text:
+            missing_files += 1
+            continue
+        output_path = Path(output_path_text).expanduser().resolve()
+        if not output_path.exists():
+            missing_files += 1
+            continue
+        try:
+            member_name, rows, file_complete = iter_zip_tsv_rows(output_path)
+        except (OSError, ValueError, zipfile.BadZipFile):
+            missing_files += 1
+            continue
+        readable_files += 1
+        scan_complete = scan_complete and file_complete
+        for row_index, row in enumerate(rows):
+            scanned_rows += 1
+            if len(row) <= GDELT_GKG_INDEX["all_names"]:
+                continue
+            document_identifier = gdelt_row_value(row, GDELT_GKG_INDEX["document_identifier"])
+            source_common_name = gdelt_row_value(row, GDELT_GKG_INDEX["source_common_name"])
+            themes = gdelt_theme_values(gdelt_row_value(row, GDELT_GKG_INDEX["themes"]))
+            locations = gdelt_gkg_locations(gdelt_row_value(row, GDELT_GKG_INDEX["locations"]))
+            organizations = gdelt_name_values(gdelt_row_value(row, GDELT_GKG_INDEX["organizations"]))
+            persons = gdelt_name_values(gdelt_row_value(row, GDELT_GKG_INDEX["persons"]))
+            token_set = row_token_set(
+                source_common_name,
+                document_identifier,
+                " ".join(themes),
+                " ".join(location.get("name", "") for location in locations),
+                " ".join(organizations),
+                " ".join(persons),
+                minimum_length=3,
+            )
+            region_match = any(
+                point_matches_geometry(location.get("latitude"), location.get("longitude"), mission_geometry)
+                for location in locations
+            ) or any(token in token_set for token in region_tokens)
+            topic_hits = sum(1 for token in topic_tokens if token in token_set)
+            if not region_match or (topic_tokens and topic_hits == 0):
+                continue
+
+            matched_rows += 1
+            domain = source_domain(document_identifier)
+            tone = gdelt_first_tone(gdelt_row_value(row, GDELT_GKG_INDEX["tone"]))
+            published_at = to_rfc3339_z(parse_loose_datetime(gdelt_row_value(row, GDELT_GKG_INDEX["date"])))
+            for value in themes[:5]:
+                theme_counter[value] += 1
+            for value in organizations[:5]:
+                organization_counter[value] += 1
+            for location in locations[:5]:
+                name = maybe_text(location.get("name"))
+                if name:
+                    location_counter[name] += 1
+            if domain:
+                domain_counter[domain] += 1
+            if tone is not None:
+                tone_values.append(tone)
+
+            push_ranked_example(
+                top_examples,
+                {
+                    "_rank": (topic_hits, len(themes), len(organizations), published_at or ""),
+                    "title": f"GDELT GKG document from {source_common_name or domain or 'unknown source'}",
+                    "text": normalize_space(
+                        " ".join(
+                            part
+                            for part in (
+                                f"themes={', '.join(themes[:3])}" if themes else "",
+                                f"locations={', '.join(maybe_text(item.get('name')) for item in locations[:3] if maybe_text(item.get('name')))}"
+                                if locations
+                                else "",
+                                f"organizations={', '.join(organizations[:3])}" if organizations else "",
+                                f"tone={tone}" if tone is not None else "",
+                            )
+                            if part
+                        )
+                    ),
+                    "url": document_identifier,
+                    "channel_name": domain or source_common_name,
+                    "published_at_utc": published_at,
+                    "record_locator": f"$.downloads[{download_index}].{member_name}[{row_index}]",
+                    "metadata": {
+                        "download_output_path": str(output_path),
+                        "zip_member": member_name,
+                        "record_id": gdelt_row_value(row, GDELT_GKG_INDEX["record_id"]),
+                        "source_common_name": source_common_name,
+                        "themes": themes[:6],
+                        "locations": [maybe_text(item.get("name")) for item in locations[:6] if maybe_text(item.get("name"))],
+                        "organizations": organizations[:6],
+                        "persons": persons[:6],
+                        "tone": tone,
+                    },
+                    "raw_json": {
+                        "record_id": gdelt_row_value(row, GDELT_GKG_INDEX["record_id"]),
+                        "date": gdelt_row_value(row, GDELT_GKG_INDEX["date"]),
+                        "source_common_name": source_common_name,
+                        "document_identifier": document_identifier,
+                        "themes": themes[:8],
+                        "locations": locations[:8],
+                        "organizations": organizations[:8],
+                        "persons": persons[:8],
+                    },
+                },
+            )
+
+    coverage_metadata = {
+        "matched_row_count": matched_rows,
+        "scanned_row_count": scanned_rows,
+        "readable_file_count": readable_files,
+        "missing_file_count": missing_files,
+        "scan_complete": scan_complete,
+        "avg_tone": maybe_mean(tone_values),
+        "top_themes": top_counter_items(theme_counter),
+        "top_locations": top_counter_items(location_counter),
+        "top_organizations": top_counter_items(organization_counter),
+        "top_domains": top_counter_items(domain_counter),
+        "region_tokens": region_tokens,
+        "topic_tokens": topic_tokens,
+    }
+    coverage_text = (
+        f"Scanned {scanned_rows} GKG rows across {readable_files} readable ZIP files; matched {matched_rows} rows. "
+        f"Top themes: {top_counter_text(theme_counter) or 'n/a'}. "
+        f"Top locations: {top_counter_text(location_counter) or 'n/a'}."
+    )
+    signals = [
+        gdelt_coverage_signal(
+            run_id=run_id,
+            round_id=round_id,
+            source_skill=source_skill,
+            path=path,
+            sha256_value=sha256_value,
+            title="GDELT GKG table coverage",
+            text=coverage_text,
+            published_at_utc=manifest_latest_timestamp(payload),
+            metadata=coverage_metadata,
+        )
+    ]
+    for example_index, example in enumerate(top_examples[:GDELT_EXAMPLE_SIGNAL_LIMIT]):
+        signals.append(
+            make_public_signal(
+                run_id=run_id,
+                round_id=round_id,
+                source_skill=source_skill,
+                signal_kind="gkg-record",
+                external_id=f"{source_skill}:{example_index}:{maybe_text(example['record_locator'])}",
+                title=maybe_text(example.get("title")),
+                text=maybe_text(example.get("text")),
+                url=maybe_text(example.get("url")),
+                author_name="",
+                channel_name=maybe_text(example.get("channel_name")),
+                language="",
+                query_text=maybe_text(mission.get("topic")),
+                published_at_utc=example.get("published_at_utc"),
+                engagement={},
+                metadata=example.get("metadata") if isinstance(example.get("metadata"), dict) else {},
+                artifact_path=path,
+                record_locator=maybe_text(example.get("record_locator")),
+                sha256_value=sha256_value,
+                raw_obj=example.get("raw_json"),
+            )
+        )
+    return signals
+
+
+def normalize_public_from_gdelt_manifest(
+    path: Path,
+    payload: Any,
+    *,
+    mission: dict[str, Any],
+    run_id: str,
+    round_id: str,
+    source_skill: str,
+    sha256_value: str,
+) -> list[dict[str, Any]]:
+    if source_skill == "gdelt-events-fetch":
+        return normalize_public_from_gdelt_events_manifest(
+            path,
+            payload,
+            mission=mission,
+            run_id=run_id,
+            round_id=round_id,
+            source_skill=source_skill,
+            sha256_value=sha256_value,
+        )
+    if source_skill == "gdelt-mentions-fetch":
+        return normalize_public_from_gdelt_mentions_manifest(
+            path,
+            payload,
+            mission=mission,
+            run_id=run_id,
+            round_id=round_id,
+            source_skill=source_skill,
+            sha256_value=sha256_value,
+        )
+    return normalize_public_from_gdelt_gkg_manifest(
+        path,
+        payload,
+        mission=mission,
+        run_id=run_id,
+        round_id=round_id,
+        source_skill=source_skill,
+        sha256_value=sha256_value,
+    )
 
 
 def normalize_public_source(
     source_skill: str,
     path: Path,
     *,
+    mission: dict[str, Any],
     run_id: str,
     round_id: str,
 ) -> list[dict[str, Any]]:
@@ -1342,6 +2200,7 @@ def normalize_public_source(
         return normalize_public_from_gdelt_manifest(
             path,
             payload,
+            mission=mission,
             run_id=run_id,
             round_id=round_id,
             source_skill=source_skill,
@@ -1355,6 +2214,7 @@ def normalize_public_source_cached(
     run_dir: Path,
     source_skill: str,
     path: Path,
+    mission: dict[str, Any],
     run_id: str,
     round_id: str,
 ) -> tuple[list[dict[str, Any]], str]:
@@ -1377,7 +2237,7 @@ def normalize_public_source_cached(
         ):
             return [item for item in signals if isinstance(item, dict)], "hit"
 
-    signals = normalize_public_source(source_skill, path, run_id=run_id, round_id=round_id)
+    signals = normalize_public_source(source_skill, path, mission=mission, run_id=run_id, round_id=round_id)
     write_cache_payload(
         cache_path,
         {
@@ -1404,6 +2264,8 @@ def public_signals_to_claims(
     run_id = mission_run_id(mission)
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for signal in signals:
+        if maybe_text(signal.get("signal_kind")) in NON_CLAIM_PUBLIC_SIGNAL_KINDS:
+            continue
         source_text = normalize_space(
             " ".join(
                 part
@@ -2748,6 +3610,7 @@ def command_normalize_public(args: argparse.Namespace) -> dict[str, Any]:
             run_dir=run_dir_path,
             source_skill=source_skill,
             path=path,
+            mission=mission,
             run_id=run_id,
             round_id=args.round_id,
         )

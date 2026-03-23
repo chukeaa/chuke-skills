@@ -50,8 +50,15 @@
 
 ### `gdelt-events-fetch`, `gdelt-mentions-fetch`, `gdelt-gkg-fetch`
 
-- Current implementation ingests manifests and downloaded artifact provenance.
-- These inputs are useful for later analytical joins, but they are not the primary claim-extraction path in this first deterministic build.
+- The canonical raw artifact is a JSON manifest whose `downloads[].output_path` entries point at ZIP sidecars.
+- The normalizer reads the ZIP member rows directly instead of stopping at manifest provenance.
+- Current deterministic outputs are:
+  - one `table-coverage` signal per source artifact
+  - a few mission-matched sample row signals:
+    - `event-record`
+    - `mention-record`
+    - `gkg-record`
+- These raw tables are still supplementary bulk layers around `gdelt-doc-search`, not a replacement for article-level recon.
 
 ## Environment Mapping
 

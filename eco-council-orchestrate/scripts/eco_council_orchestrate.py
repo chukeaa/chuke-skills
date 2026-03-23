@@ -29,6 +29,9 @@ OPENAQ_API_SCRIPT = REPO_DIR / "openaq-data-fetch" / "scripts" / "openaq_api_cli
 
 SKILL_DIRS = {
     "gdelt-doc-search": REPO_DIR / "gdelt-doc-search",
+    "gdelt-events-fetch": REPO_DIR / "gdelt-events-fetch",
+    "gdelt-mentions-fetch": REPO_DIR / "gdelt-mentions-fetch",
+    "gdelt-gkg-fetch": REPO_DIR / "gdelt-gkg-fetch",
     "bluesky-cascade-fetch": REPO_DIR / "bluesky-cascade-fetch",
     "youtube-video-search": REPO_DIR / "youtube-video-search",
     "youtube-comments-fetch": REPO_DIR / "youtube-comments-fetch",
@@ -46,6 +49,9 @@ SKILL_DIRS = {
 
 FETCH_SCRIPT_PATHS = {
     "gdelt-doc-search": SKILL_DIRS["gdelt-doc-search"] / "scripts" / "gdelt_doc_search.py",
+    "gdelt-events-fetch": SKILL_DIRS["gdelt-events-fetch"] / "scripts" / "gdelt_events_fetch.py",
+    "gdelt-mentions-fetch": SKILL_DIRS["gdelt-mentions-fetch"] / "scripts" / "gdelt_mentions_fetch.py",
+    "gdelt-gkg-fetch": SKILL_DIRS["gdelt-gkg-fetch"] / "scripts" / "gdelt_gkg_fetch.py",
     "bluesky-cascade-fetch": SKILL_DIRS["bluesky-cascade-fetch"] / "scripts" / "bluesky_cascade_fetch.py",
     "youtube-video-search": SKILL_DIRS["youtube-video-search"] / "scripts" / "youtube_video_search.py",
     "youtube-comments-fetch": SKILL_DIRS["youtube-comments-fetch"] / "scripts" / "youtube_comments_fetch.py",
@@ -62,6 +68,9 @@ FETCH_SCRIPT_PATHS = {
 
 PUBLIC_SOURCES = (
     "gdelt-doc-search",
+    "gdelt-events-fetch",
+    "gdelt-mentions-fetch",
+    "gdelt-gkg-fetch",
     "bluesky-cascade-fetch",
     "youtube-video-search",
     "youtube-comments-fetch",
@@ -69,6 +78,26 @@ PUBLIC_SOURCES = (
     "regulationsgov-comments-fetch",
     "regulationsgov-comment-detail-fetch",
 )
+GDELT_RAW_TABLE_SOURCES = {
+    "gdelt-events-fetch",
+    "gdelt-mentions-fetch",
+    "gdelt-gkg-fetch",
+}
+GDELT_EXPECTED_COLUMNS = {
+    "gdelt-events-fetch": "61",
+    "gdelt-mentions-fetch": "16",
+    "gdelt-gkg-fetch": "27",
+}
+GDELT_MAX_FILE_INPUT_KEYS = {
+    "gdelt-events-fetch": "gdelt_events_max_files",
+    "gdelt-mentions-fetch": "gdelt_mentions_max_files",
+    "gdelt-gkg-fetch": "gdelt_gkg_max_files",
+}
+GDELT_PREVIEW_LINE_INPUT_KEYS = {
+    "gdelt-events-fetch": "gdelt_events_preview_lines",
+    "gdelt-mentions-fetch": "gdelt_mentions_preview_lines",
+    "gdelt-gkg-fetch": "gdelt_gkg_preview_lines",
+}
 ENVIRONMENT_SOURCES = (
     "airnow-hourly-obs-fetch",
     "usgs-water-iv-fetch",
@@ -376,6 +405,14 @@ def default_raw_artifact_path(run_dir: Path, round_id: str, role: str, source_sk
     }:
         extension = ".jsonl"
     return role_raw_dir(run_dir, round_id, role) / f"{source_skill}{extension}"
+
+
+def default_raw_download_dir(run_dir: Path, round_id: str, role: str, source_skill: str) -> Path:
+    return role_raw_dir(run_dir, round_id, role) / source_skill
+
+
+def default_raw_quarantine_dir(run_dir: Path, round_id: str, role: str, source_skill: str) -> Path:
+    return default_raw_download_dir(run_dir, round_id, role, source_skill) / "quarantine"
 
 
 def default_step_stdout_path(run_dir: Path, round_id: str, role: str, source_skill: str) -> Path:
@@ -764,8 +801,11 @@ def make_step(
     notes: list[str],
     skill_refs: list[str],
     cwd: Path,
+    artifact_capture: str = "",
+    download_dir: Path | None = None,
+    quarantine_dir: Path | None = None,
 ) -> dict[str, Any]:
-    return {
+    step = {
         "step_id": step_id,
         "role": role,
         "source_skill": source_skill,
@@ -780,6 +820,13 @@ def make_step(
         "skill_refs": skill_refs,
         "normalizer_input": f"{source_skill}={artifact_path}",
     }
+    if artifact_capture:
+        step["artifact_capture"] = artifact_capture
+    if download_dir is not None:
+        step["download_dir"] = str(download_dir)
+    if quarantine_dir is not None:
+        step["quarantine_dir"] = str(quarantine_dir)
+    return step
 
 
 def new_step_id(role: str, source_skill: str, counter: int) -> str:
@@ -835,6 +882,9 @@ def build_sociologist_steps(
         notes: list[str] = []
         depends_on: list[str] = []
         skill_refs = [f"${source_skill}"]
+        artifact_capture = ""
+        download_dir: Path | None = None
+        quarantine_dir: Path | None = None
 
         if source_skill == "gdelt-doc-search":
             argv = [
@@ -858,6 +908,56 @@ def build_sociologist_steps(
                 "--pretty",
             ]
             notes.append("Use GDELT DOC as broad article discovery for public claims.")
+        elif source_skill in GDELT_RAW_TABLE_SOURCES:
+            doc_step_id = prior_step_ids.get("gdelt-doc-search")
+            if doc_step_id:
+                depends_on.append(doc_step_id)
+            download_dir = default_raw_download_dir(run_dir, round_id, role, source_skill)
+            quarantine_dir = default_raw_quarantine_dir(run_dir, round_id, role, source_skill)
+            artifact_capture = "stdout-json"
+            max_files = (
+                merged_task_scalar(role_tasks, GDELT_MAX_FILE_INPUT_KEYS[source_skill])
+                or merged_task_scalar(role_tasks, "gdelt_table_max_files")
+                or "2"
+            )
+            preview_lines = (
+                merged_task_scalar(role_tasks, GDELT_PREVIEW_LINE_INPUT_KEYS[source_skill])
+                or merged_task_scalar(role_tasks, "gdelt_table_preview_lines")
+                or "2"
+            )
+            argv = [
+                "python3",
+                str(FETCH_SCRIPT_PATHS[source_skill]),
+                "fetch",
+                "--mode",
+                "range",
+                "--start-datetime",
+                to_gdelt_datetime(window["start_utc"]),
+                "--end-datetime",
+                to_gdelt_datetime(window["end_utc"]),
+                "--max-files",
+                max_files,
+                "--output-dir",
+                str(download_dir),
+                "--overwrite",
+                "--preview-lines",
+                preview_lines,
+                "--validate-structure",
+                "--expected-columns",
+                GDELT_EXPECTED_COLUMNS[source_skill],
+                "--quarantine-dir",
+                str(quarantine_dir),
+                "--pretty",
+            ]
+            notes.append(
+                "Capture the stdout JSON manifest at the contract artifact path; downloaded ZIP exports remain under the raw sidecar directory."
+            )
+            if source_skill == "gdelt-events-fetch":
+                notes.append("Use GDELT Events as event-level bulk supplement after DOC recon anchors the mission window.")
+            elif source_skill == "gdelt-mentions-fetch":
+                notes.append("Use GDELT Mentions as mention-volume supplement after DOC recon anchors the mission window.")
+            else:
+                notes.append("Use GDELT GKG as theme/location/entity supplement after DOC recon anchors the mission window.")
         elif source_skill == "bluesky-cascade-fetch":
             argv = [
                 "python3",
@@ -1073,6 +1173,9 @@ def build_sociologist_steps(
                 notes=notes,
                 skill_refs=skill_refs,
                 cwd=SKILL_DIRS.get(source_skill, REPO_DIR),
+                artifact_capture=artifact_capture,
+                download_dir=download_dir,
+                quarantine_dir=quarantine_dir,
             )
         )
         prior_step_ids[source_skill] = step_id
@@ -1692,6 +1795,20 @@ def run_json_cli(argv: list[str], *, cwd: Path | None = None, env: dict[str, str
     return payload
 
 
+def materialize_json_artifact_from_stdout(*, artifact_path: Path, stdout_path: Path) -> bool:
+    if artifact_path.exists():
+        return True
+    if not stdout_path.exists():
+        return False
+    try:
+        payload = read_json(stdout_path)
+    except Exception:
+        return False
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(artifact_path, payload, pretty=True)
+    return artifact_path.exists()
+
+
 def ensure_ok_envelope(payload: dict[str, Any], label: str) -> dict[str, Any]:
     if payload.get("ok") is False:
         raise RuntimeError(f"{label} returned ok=false: {payload}")
@@ -1766,6 +1883,7 @@ def execute_fetch_plan(
             stderr_path = Path(maybe_text(step.get("stderr_path"))).expanduser().resolve()
             cwd = Path(maybe_text(step.get("cwd")) or str(REPO_DIR)).expanduser().resolve()
             depends_on = [maybe_text(item) for item in step.get("depends_on", []) if maybe_text(item)]
+            artifact_capture = maybe_text(step.get("artifact_capture"))
             raw_command = step.get("command")
             if not isinstance(raw_command, str) or not raw_command.strip():
                 raise ValueError(f"Fetch step {step_id} is missing a shell command.")
@@ -1816,6 +1934,12 @@ def execute_fetch_plan(
                 except subprocess.TimeoutExpired:
                     returncode = 124
                     timed_out = True
+            artifact_materialized = False
+            if returncode == 0 and artifact_path is not None and artifact_capture == "stdout-json":
+                artifact_materialized = materialize_json_artifact_from_stdout(
+                    artifact_path=artifact_path,
+                    stdout_path=stdout_path,
+                )
             artifact_missing = artifact_path is not None and not artifact_path.exists()
             if returncode == 0 and not artifact_missing:
                 succeeded.add(step_id)
@@ -1829,6 +1953,8 @@ def execute_fetch_plan(
                 }
                 if artifact_path is not None:
                     completed_status["artifact_path"] = str(artifact_path)
+                if artifact_materialized:
+                    completed_status["artifact_materialized"] = True
                 statuses.append(completed_status)
                 continue
 

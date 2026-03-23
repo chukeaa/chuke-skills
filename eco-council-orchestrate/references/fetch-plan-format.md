@@ -49,6 +49,15 @@ Each step includes:
 - `skill_refs`
 - `normalizer_input`
 
+Some steps may also include:
+
+- `artifact_capture`
+  - `stdout-json` means the fetch command prints the canonical JSON artifact to stdout and the runner should materialize that JSON at `artifact_path`.
+- `download_dir`
+  - sidecar directory for downloaded files when the canonical artifact is only a manifest
+- `quarantine_dir`
+  - optional sidecar directory for structure-validation issue files
+
 ## Intended Usage
 
 - `command` is the exact shell snippet the expert agent or local runner should execute.
@@ -59,6 +68,10 @@ Each step includes:
 - `depends_on` is used for chained steps such as:
   - `youtube-video-search` -> `youtube-comments-fetch` when both were explicitly selected
   - `regulationsgov-comments-fetch` -> `regulationsgov-comment-detail-fetch` when both were explicitly selected
+- Raw GDELT table steps (`gdelt-events-fetch`, `gdelt-mentions-fetch`, `gdelt-gkg-fetch`) use:
+  - `artifact_capture=stdout-json`
+  - `artifact_path` for the manifest JSON
+  - `download_dir` for ZIP sidecars referenced by `downloads[].output_path`
 - `normalizer_input` can be passed directly to `$eco-council-normalize --input`.
 
 ## Editing Rule

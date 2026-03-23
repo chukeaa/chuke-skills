@@ -10,6 +10,16 @@ These are the minimal artifact shapes the first simulator version writes because
 - important field:
   - `articles[]`
 
+### `gdelt-events-fetch`, `gdelt-mentions-fetch`, `gdelt-gkg-fetch`
+
+- JSON manifest at the canonical `artifact_path`
+- important fields:
+  - `downloads[]`
+  - `downloads[].output_path`
+  - `downloads[].preview_member`
+  - `downloads[].validation`
+- each `downloads[].output_path` points at a simulated ZIP file containing one tab-delimited member file with the expected GDELT column count
+
 ### `bluesky-cascade-fetch`
 
 - JSON object

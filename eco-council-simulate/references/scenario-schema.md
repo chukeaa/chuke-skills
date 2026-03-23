@@ -83,4 +83,6 @@ Per-source overrides currently support:
 - `fire_count`
 - `mode`
 
+For raw GDELT table sources, `record_count` controls the number of simulated table rows distributed across one or more ZIP files.
+
 Keep overrides minimal. Prefer presets plus a few focused overrides over huge hand-authored fake payloads.

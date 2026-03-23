@@ -1,6 +1,6 @@
 interface:
   display_name: "Eco Council Simulate"
   short_description: "Scenario-driven eco council raw-data simulator"
-  default_prompt: "Use $eco-council-simulate to materialize deterministic simulated raw artifacts and canonical fetch execution for a prepared eco-council round when you want low-cost replay or experiment runs."
+  default_prompt: "Use $eco-council-simulate to materialize deterministic simulated raw artifacts, including manifest-backed GDELT ZIP sidecars, and canonical fetch execution for a prepared eco-council round when you want low-cost replay or experiment runs."
 policy:
   allow_implicit_invocation: false

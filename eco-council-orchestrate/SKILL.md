@@ -51,7 +51,8 @@ python3 scripts/eco_council_orchestrate.py prepare-round \
 ```
 
 5. Let the expert agents fetch raw artifacts into the exact `raw/` paths named by the prompt files.
-  - Public fetches can be zero-step, or can include `gdelt-doc-search`, `bluesky-cascade-fetch`, `youtube-*`, `federal-register-doc-fetch`, and `regulationsgov-*`, depending on audited source selection and mission source policy.
+  - Public fetches can be zero-step, or can include `gdelt-doc-search`, `gdelt-events-fetch`, `gdelt-mentions-fetch`, `gdelt-gkg-fetch`, `bluesky-cascade-fetch`, `youtube-*`, `federal-register-doc-fetch`, and `regulationsgov-*`, depending on audited source selection and mission source policy.
+  - Raw GDELT table steps keep one canonical manifest JSON at the contract `raw/` path and store downloaded ZIP sidecars under a sibling raw subdirectory.
   - Environment fetches can be zero-step, or can include `airnow-hourly-obs-fetch`, `usgs-water-iv-fetch`, `open-meteo-*`, `nasa-firms-fire-fetch`, and `openaq-data-fetch`, depending on audited source selection and mission source policy.
 
 6. Run the deterministic data plane after raw artifacts exist.
@@ -99,6 +100,10 @@ python3 scripts/eco_council_orchestrate.py advance-round \
   - aggregation into one normalizer-ready raw artifact
 
 Use it directly when `openaq-data-fetch` needs a station-measurement artifact without pushing OpenAQ API chaining into the expert prompt.
+
+- `prepare-round` can emit direct raw GDELT table fetches for `gdelt-events-fetch`, `gdelt-mentions-fetch`, and `gdelt-gkg-fetch`.
+  - These steps depend on `gdelt-doc-search` when article recon was also selected in the same round.
+  - The contract artifact is the stdout JSON manifest, while downloaded ZIP files live under a sidecar raw directory referenced by that manifest.
 
 - `prepare-round` can also emit direct `federal-register-doc-fetch` steps for official U.S. rulemaking, notice, and policy-document discovery.
   - Task inputs may override the default plain-text term with `federal_register_term`.

@@ -29,6 +29,7 @@ Each missing evidence type maps to one default next-round task shape:
 - `public-discussion-coverage` -> `sociologist` using GDELT, Bluesky, or YouTube fetch skills
 
 The script intersects these source hints with `mission.source_policy` when available.
+When counting public-source diversity, `gdelt-doc-search` and the three raw GDELT table skills are treated as one GDELT family rather than four independent channels.
 The generated drafts only populate `task.inputs.preferred_sources`.
 They do not auto-emit `task.inputs.required_sources`; that field is reserved for moderator-authored overrides or rare system-level hard constraints outside reporting.
 

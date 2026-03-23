@@ -39,6 +39,7 @@ python3 scripts/eco_council_normalize.py normalize-public \
   --run-dir ./runs/20260320-chiangmai-smoke \
   --round-id round-001 \
   --input gdelt-doc-search=./runs/20260320-chiangmai-smoke/round_001/sociologist/raw/gdelt-doc-search.json \
+  --input gdelt-gkg-fetch=./runs/20260320-chiangmai-smoke/round_001/sociologist/raw/gdelt-gkg-fetch.json \
   --input bluesky-cascade-fetch=./runs/20260320-chiangmai-smoke/round_001/sociologist/raw/bluesky/seed_posts.json \
   --input youtube-comments-fetch=./runs/20260320-chiangmai-smoke/round_001/sociologist/raw/youtube-comments.jsonl \
   --pretty
@@ -87,7 +88,9 @@ Public-signal normalization currently supports:
 - `federal-register-doc-fetch`
 - `regulationsgov-comments-fetch`
 - `regulationsgov-comment-detail-fetch`
-- manifest-only ingestion for `gdelt-events-fetch`, `gdelt-mentions-fetch`, and `gdelt-gkg-fetch`
+- ZIP-backed manifest ingestion for `gdelt-events-fetch`, `gdelt-mentions-fetch`, and `gdelt-gkg-fetch`
+  - the canonical raw artifact is the manifest JSON
+  - the normalizer reads the referenced ZIP sidecars and emits deterministic `table-coverage` plus sample row signals
 
 Environment normalization currently supports:
 - `airnow-hourly-obs-fetch`

@@ -50,13 +50,24 @@ NEXT_ACTION_LIBRARY: dict[str, dict[str, Any]] = {
         "assigned_role": "sociologist",
         "objective": "Collect and normalize concrete mission-window public claims from approved news and discussion sources.",
         "reason": "The round did not produce enough normalized public claims to assess public concern, event severity, or attribution narratives.",
-        "preferred_sources": ["gdelt-doc-search", "youtube-video-search", "youtube-comments-fetch", "bluesky-cascade-fetch"],
+        "preferred_sources": [
+            "gdelt-doc-search",
+            "gdelt-gkg-fetch",
+            "youtube-video-search",
+            "youtube-comments-fetch",
+            "bluesky-cascade-fetch",
+        ],
     },
     "evidence-cards-linking-public-claims-to-physical-observations": {
         "assigned_role": "sociologist",
         "objective": "Recover more attributable public claims that can be linked directly against the available physical observations.",
         "reason": "Public-side evidence needs more concrete and attributable claim phrasing before physical evidence cards can be linked reliably.",
-        "preferred_sources": ["gdelt-doc-search", "youtube-video-search", "youtube-comments-fetch"],
+        "preferred_sources": [
+            "gdelt-doc-search",
+            "gdelt-mentions-fetch",
+            "youtube-video-search",
+            "youtube-comments-fetch",
+        ],
     },
     "station-air-quality": {
         "assigned_role": "environmentalist",
@@ -104,23 +115,41 @@ NEXT_ACTION_LIBRARY: dict[str, dict[str, Any]] = {
         "assigned_role": "sociologist",
         "objective": "Collect more independent public-discussion evidence for the same mission window.",
         "reason": "Current public-claim coverage is too thin or concentrated in too few channels.",
-        "preferred_sources": ["gdelt-doc-search", "bluesky-cascade-fetch", "youtube-video-search"],
+        "preferred_sources": ["gdelt-doc-search", "gdelt-gkg-fetch", "bluesky-cascade-fetch", "youtube-video-search"],
     },
+}
+PUBLIC_SOURCE_FAMILIES = {
+    "gdelt-doc-search": "gdelt",
+    "gdelt-events-fetch": "gdelt",
+    "gdelt-mentions-fetch": "gdelt",
+    "gdelt-gkg-fetch": "gdelt",
+    "youtube-video-search": "youtube",
+    "youtube-comments-fetch": "youtube",
+    "regulationsgov-comments-fetch": "regulationsgov",
+    "regulationsgov-comment-detail-fetch": "regulationsgov",
 }
 SOURCE_DEPENDENCIES: dict[str, list[str]] = {
     "youtube-comments-fetch": ["youtube-video-search"],
     "regulationsgov-comment-detail-fetch": ["regulationsgov-comments-fetch"],
 }
 SOURCE_KEYWORDS = (
+    ("gdelt events", ["gdelt-events-fetch"]),
+    ("gdelt mentions", ["gdelt-mentions-fetch"]),
+    ("gdelt gkg", ["gdelt-gkg-fetch"]),
+    ("gdelt raw", ["gdelt-events-fetch", "gdelt-mentions-fetch", "gdelt-gkg-fetch"]),
+    ("mentions volume", ["gdelt-mentions-fetch"]),
+    ("theme coverage", ["gdelt-gkg-fetch"]),
+    ("entity coverage", ["gdelt-gkg-fetch"]),
+    ("bulk coverage", ["gdelt-events-fetch", "gdelt-gkg-fetch"]),
     ("youtube comments", ["youtube-comments-fetch"]),
     ("youtube comment", ["youtube-comments-fetch"]),
     ("youtube videos", ["youtube-video-search"]),
     ("youtube video", ["youtube-video-search"]),
-    ("public discussion", ["gdelt-doc-search", "bluesky-cascade-fetch", "youtube-video-search"]),
-    ("news and social", ["gdelt-doc-search", "youtube-video-search", "bluesky-cascade-fetch"]),
-    ("news and discussion", ["gdelt-doc-search", "youtube-video-search", "bluesky-cascade-fetch"]),
-    ("public claims", ["gdelt-doc-search", "youtube-video-search"]),
-    ("public claim", ["gdelt-doc-search", "youtube-video-search"]),
+    ("public discussion", ["gdelt-doc-search", "gdelt-gkg-fetch", "bluesky-cascade-fetch", "youtube-video-search"]),
+    ("news and social", ["gdelt-doc-search", "gdelt-gkg-fetch", "youtube-video-search", "bluesky-cascade-fetch"]),
+    ("news and discussion", ["gdelt-doc-search", "gdelt-gkg-fetch", "youtube-video-search", "bluesky-cascade-fetch"]),
+    ("public claims", ["gdelt-doc-search", "gdelt-mentions-fetch", "youtube-video-search"]),
+    ("public claim", ["gdelt-doc-search", "gdelt-mentions-fetch", "youtube-video-search"]),
     ("air quality", ["openaq-data-fetch", "open-meteo-air-quality-fetch"]),
     ("airnow", ["airnow-hourly-obs-fetch"]),
     ("openaq", ["openaq-data-fetch"]),
@@ -150,7 +179,7 @@ SOURCE_KEYWORDS = (
     ("comment", ["regulationsgov-comments-fetch", "regulationsgov-comment-detail-fetch"]),
     ("youtube", ["youtube-video-search", "youtube-comments-fetch"]),
     ("bluesky", ["bluesky-cascade-fetch"]),
-    ("gdelt", ["gdelt-doc-search"]),
+    ("gdelt", ["gdelt-doc-search", "gdelt-gkg-fetch"]),
     ("news", ["gdelt-doc-search"]),
 )
 
@@ -695,16 +724,21 @@ def expected_output_kinds_for_role(role: str) -> list[str]:
     return ["expert-report"]
 
 
-def public_source_skills(claims: list[dict[str, Any]]) -> list[str]:
-    sources: list[str] = []
+def public_source_channel(source_skill: str) -> str:
+    text = maybe_text(source_skill)
+    return PUBLIC_SOURCE_FAMILIES.get(text, text)
+
+
+def public_source_channels(claims: list[dict[str, Any]]) -> list[str]:
+    channels: list[str] = []
     for claim in claims:
         refs = claim.get("public_refs")
         if not isinstance(refs, list):
             continue
         for ref in refs:
             if isinstance(ref, dict):
-                sources.append(maybe_text(ref.get("source_skill")))
-    return unique_strings(sources)
+                channels.append(public_source_channel(maybe_text(ref.get("source_skill"))))
+    return unique_strings(channels)
 
 
 def infer_missing_evidence_types(*, claims: list[dict[str, Any]], observations: list[dict[str, Any]], evidence_cards: list[dict[str, Any]]) -> list[str]:
@@ -773,7 +807,7 @@ def infer_missing_evidence_types(*, claims: list[dict[str, Any]], observations: 
             if not has_reggov:
                 missing.add("policy-comment-coverage")
 
-    if unresolved_claims and len(public_source_skills(claims)) < 2:
+    if unresolved_claims and len(public_source_channels(claims)) < 2:
         if any(maybe_text(claim.get("claim_type")) != "policy-reaction" for claim in unresolved_claims):
             missing.add("public-discussion-coverage")
 

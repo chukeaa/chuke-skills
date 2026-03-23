@@ -1,4 +1,4 @@
 interface:
   display_name: "Eco Council Normalize"
   short_description: "Normalize eco-council public and environment data"
-  default_prompt: "Use $eco-council-normalize to convert eco-council raw fetch outputs, including AirNow station observations and flood/hydrology artifacts, into canonical claims, observations, evidence cards, and round context JSON."
+  default_prompt: "Use $eco-council-normalize to convert eco-council raw fetch outputs, including raw GDELT table manifests, AirNow station observations, and flood or hydrology artifacts, into canonical claims, observations, evidence cards, and round context JSON."

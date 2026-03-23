@@ -4,16 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
+import io
 import json
 import os
 import random
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
+import zipfile
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
@@ -29,8 +33,33 @@ JSONL_SOURCES = {
     "regulationsgov-comments-fetch",
     "regulationsgov-comment-detail-fetch",
 }
+RAW_GDELT_SOURCES = {
+    "gdelt-events-fetch",
+    "gdelt-mentions-fetch",
+    "gdelt-gkg-fetch",
+}
+GDELT_EXPECTED_COLUMNS = {
+    "gdelt-events-fetch": 61,
+    "gdelt-mentions-fetch": 16,
+    "gdelt-gkg-fetch": 27,
+}
+GDELT_ZIP_SUFFIX = {
+    "gdelt-events-fetch": ".export.CSV.zip",
+    "gdelt-mentions-fetch": ".mentions.CSV.zip",
+    "gdelt-gkg-fetch": ".gkg.csv.zip",
+}
+GDELT_MEMBER_SUFFIX = {
+    "gdelt-events-fetch": ".export.CSV",
+    "gdelt-mentions-fetch": ".mentions.CSV",
+    "gdelt-gkg-fetch": ".gkg.csv",
+}
+DEFAULT_GDELT_BASE_URL = "http://data.gdeltproject.org/gdeltv2"
+DEFAULT_GDELT_PREVIEW_LINES = 2
 SUPPORTED_SOURCES = {
     "gdelt-doc-search",
+    "gdelt-events-fetch",
+    "gdelt-mentions-fetch",
+    "gdelt-gkg-fetch",
     "bluesky-cascade-fetch",
     "youtube-video-search",
     "youtube-comments-fetch",
@@ -143,6 +172,9 @@ DAILY_METRICS = {
 }
 BASE_RECORD_COUNTS = {
     "gdelt-doc-search": 4,
+    "gdelt-events-fetch": 4,
+    "gdelt-mentions-fetch": 4,
+    "gdelt-gkg-fetch": 4,
     "bluesky-cascade-fetch": 5,
     "youtube-video-search": 3,
     "youtube-comments-fetch": 8,
@@ -251,6 +283,23 @@ def atomic_write_text_file(path: Path, content: str) -> None:
         raise
 
 
+def atomic_write_bytes_file(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def write_json(path: Path, payload: Any, *, pretty: bool) -> None:
     atomic_write_text_file(path, pretty_json(payload, pretty=pretty) + "\n")
 
@@ -258,6 +307,10 @@ def write_json(path: Path, payload: Any, *, pretty: bool) -> None:
 def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     lines = [json.dumps(record, ensure_ascii=True, sort_keys=True) for record in records]
     atomic_write_text_file(path, "\n".join(lines) + ("\n" if lines else ""))
+
+
+def write_bytes(path: Path, payload: bytes) -> None:
+    atomic_write_bytes_file(path, payload)
 
 
 def write_text(path: Path, content: str) -> None:
@@ -461,10 +514,15 @@ def geometry_center(geometry: dict[str, Any]) -> tuple[float, float]:
             return (0.0, 0.0)
         return (float(latitude), float(longitude))
     if geometry_type == "BBox":
-        min_lat = maybe_number(geometry.get("min_latitude"))
-        max_lat = maybe_number(geometry.get("max_latitude"))
-        min_lon = maybe_number(geometry.get("min_longitude"))
-        max_lon = maybe_number(geometry.get("max_longitude"))
+        min_lat = maybe_number(geometry.get("south"))
+        max_lat = maybe_number(geometry.get("north"))
+        min_lon = maybe_number(geometry.get("west"))
+        max_lon = maybe_number(geometry.get("east"))
+        if None in {min_lat, max_lat, min_lon, max_lon}:
+            min_lat = maybe_number(geometry.get("min_latitude"))
+            max_lat = maybe_number(geometry.get("max_latitude"))
+            min_lon = maybe_number(geometry.get("min_longitude"))
+            max_lon = maybe_number(geometry.get("max_longitude"))
         if None in {min_lat, max_lat, min_lon, max_lon}:
             return (0.0, 0.0)
         return ((float(min_lat) + float(max_lat)) / 2.0, (float(min_lon) + float(max_lon)) / 2.0)
@@ -709,6 +767,18 @@ def text_snippets_for_source(scenario: dict[str, Any], source_skill: str) -> lis
     return [maybe_text(item) for item in value if maybe_text(item)]
 
 
+def slugify(value: Any, *, default: str) -> str:
+    tokens = re.findall(r"[a-z0-9]+", maybe_text(value).casefold())
+    return "-".join(tokens[:8]) or default
+
+
+def split_counts(total: int, bucket_count: int) -> list[int]:
+    if total <= 0 or bucket_count <= 0:
+        return []
+    base, remainder = divmod(total, bucket_count)
+    return [base + (1 if index < remainder else 0) for index in range(bucket_count)]
+
+
 def date_labels(start: datetime, end: datetime, count: int, scenario: dict[str, Any]) -> list[str]:
     if count <= 0:
         return []
@@ -744,6 +814,12 @@ def source_count(payload: Any, source_skill: str) -> int:
     if source_skill == "gdelt-doc-search" and isinstance(payload, dict):
         articles = payload.get("articles")
         return len(articles) if isinstance(articles, list) else 0
+    if source_skill in RAW_GDELT_SOURCES and isinstance(payload, dict):
+        downloaded_count = maybe_number(payload.get("downloaded_count"))
+        if downloaded_count is not None:
+            return int(downloaded_count)
+        downloads = payload.get("downloads")
+        return len(downloads) if isinstance(downloads, list) else 0
     if source_skill == "bluesky-cascade-fetch" and isinstance(payload, dict):
         seeds = payload.get("seed_posts")
         return len(seeds) if isinstance(seeds, list) else 0
@@ -770,6 +846,16 @@ def source_count(payload: Any, source_skill: str) -> int:
 def empty_payload_for_source(source_skill: str, start: datetime, end: datetime) -> Any:
     if source_skill == "gdelt-doc-search":
         return {"articles": []}
+    if source_skill in RAW_GDELT_SOURCES:
+        return {
+            "ok": True,
+            "mode": "range",
+            "selected_count": 0,
+            "downloaded_count": 0,
+            "skipped_count": 0,
+            "downloads": [],
+            "skipped": [],
+        }
     if source_skill == "bluesky-cascade-fetch":
         return {"seed_posts": [], "threads": []}
     if source_skill in JSONL_SOURCES:
@@ -814,8 +900,384 @@ def public_line_text(scenario: dict[str, Any], mission: dict[str, Any], source_s
     return (title_out, body)
 
 
+def gdelt_topic_phrase(mission: dict[str, Any], scenario: dict[str, Any]) -> str:
+    parts = [
+        maybe_text(scenario.get("public_topic")),
+        maybe_text(mission.get("topic")),
+        maybe_text(mission.get("objective")),
+    ]
+    return normalize_space(" ".join(part for part in parts if part))
+
+
+def gdelt_place_label(mission: dict[str, Any], scenario: dict[str, Any]) -> str:
+    return maybe_text(scenario.get("place_label")) or region_label(mission)
+
+
+def gdelt_claim_tone(mode: str) -> float:
+    if mode == "contradict":
+        return 1.6
+    if mode == "mixed":
+        return -0.8
+    if mode == "sparse":
+        return -1.4
+    return -3.8
+
+
+def gdelt_goldstein_score(mode: str) -> float:
+    if mode == "contradict":
+        return 2.0
+    if mode == "mixed":
+        return -1.5
+    if mode == "sparse":
+        return -2.0
+    return -5.0
+
+
+def gdelt_event_base_code(claim_type: str) -> str:
+    return {
+        "air-pollution": "112",
+        "drought": "023",
+        "flood": "0233",
+        "heat": "073",
+        "policy-reaction": "010",
+        "smoke": "112",
+        "water-pollution": "043",
+        "wildfire": "204",
+    }.get(claim_type, "010")
+
+
 def gdelt_datetime_text(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+
+def gdelt_archive_filename(source_skill: str, timestamp: datetime) -> str:
+    return gdelt_datetime_text(timestamp) + GDELT_ZIP_SUFFIX[source_skill]
+
+
+def gdelt_member_name(source_skill: str, timestamp: datetime) -> str:
+    return gdelt_datetime_text(timestamp) + GDELT_MEMBER_SUFFIX[source_skill]
+
+
+def build_gdelt_zip_payload(
+    *,
+    member_name: str,
+    rows: list[list[str]],
+) -> tuple[bytes, list[str]]:
+    text_buffer = io.StringIO()
+    writer = csv.writer(text_buffer, delimiter="\t", lineterminator="\n")
+    for row in rows:
+        writer.writerow(row)
+    member_text = text_buffer.getvalue()
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(member_name, member_text.encode("utf-8"))
+    preview_lines = member_text.rstrip("\n").splitlines()[:DEFAULT_GDELT_PREVIEW_LINES]
+    return (zip_buffer.getvalue(), preview_lines)
+
+
+def gdelt_validation_summary(*, member_name: str, row_count: int, expected_columns: int) -> dict[str, Any]:
+    return {
+        "passed": True,
+        "checked_member": member_name,
+        "expected_columns": expected_columns,
+        "scanned_lines": row_count,
+        "scan_complete": True,
+        "max_lines": row_count or 1,
+        "empty_line_count": 0,
+        "issue_count": 0,
+        "decode_error_count": 0,
+        "column_mismatch_count": 0,
+        "issues": [],
+        "quarantine_path": None,
+    }
+
+
+def gdelt_country_hint(place_label: str) -> str:
+    parts = [part.strip() for part in maybe_text(place_label).split(",") if part.strip()]
+    return parts[-1] if parts else place_label
+
+
+def build_gdelt_events_rows(
+    *,
+    mission: dict[str, Any],
+    scenario: dict[str, Any],
+    mode: str,
+    source_skill: str,
+    count: int,
+    row_times: list[datetime],
+    start_index: int,
+) -> list[list[str]]:
+    claim_type = maybe_text(scenario.get("claim_type")) or "other"
+    place_label = gdelt_place_label(mission, scenario)
+    topic_phrase = gdelt_topic_phrase(mission, scenario) or claim_type
+    topic_slug = slugify(topic_phrase, default="topic")
+    place_slug = slugify(place_label, default="place")
+    domain = PUBLIC_DOMAINS.get(claim_type, PUBLIC_DOMAINS["other"])
+    title_root = place_label.replace(",", "")
+    latitude, longitude = shifted_coordinates(*geometry_center(mission_region(mission).get("geometry", {})), scenario)
+    tone = gdelt_claim_tone(mode)
+    event_base_code = gdelt_event_base_code(claim_type)
+    rows: list[list[str]] = []
+    for local_index in range(count):
+        global_index = start_index + local_index
+        timestamp = row_times[local_index]
+        event_id = str((seed_for_source(scenario, source_skill) % 9_000_000) + global_index + 1)
+        title, _body = public_line_text(scenario, mission, source_skill, global_index)
+        source_url = f"https://{domain}/gdelt-events/{place_slug}/{topic_slug}/{global_index + 1}"
+        row = [""] * GDELT_EXPECTED_COLUMNS[source_skill]
+        row[0] = event_id
+        row[1] = timestamp.strftime("%Y%m%d")
+        row[6] = f"{title_root} monitors"
+        row[16] = f"{topic_phrase} response"
+        row[26] = event_base_code
+        row[27] = event_base_code
+        row[28] = event_base_code[:2]
+        row[30] = f"{gdelt_goldstein_score(mode):.1f}"
+        row[31] = str(5 + global_index)
+        row[32] = str(2 + (global_index % 3))
+        row[33] = str(2 + (global_index % 2))
+        row[34] = f"{tone - (local_index * 0.2):.2f}"
+        row[52] = place_label
+        row[53] = gdelt_country_hint(place_label)
+        row[56] = f"{latitude:.4f}"
+        row[57] = f"{longitude:.4f}"
+        row[59] = gdelt_datetime_text(timestamp)
+        row[60] = source_url
+        rows.append(row)
+    return rows
+
+
+def build_gdelt_mentions_rows(
+    *,
+    mission: dict[str, Any],
+    scenario: dict[str, Any],
+    mode: str,
+    source_skill: str,
+    count: int,
+    row_times: list[datetime],
+    start_index: int,
+) -> list[list[str]]:
+    claim_type = maybe_text(scenario.get("claim_type")) or "other"
+    place_label = gdelt_place_label(mission, scenario)
+    topic_phrase = gdelt_topic_phrase(mission, scenario) or claim_type
+    topic_slug = slugify(topic_phrase, default="topic")
+    place_slug = slugify(place_label, default="place")
+    domain = PUBLIC_DOMAINS.get(claim_type, PUBLIC_DOMAINS["other"])
+    source_name = f"{place_label} {claim_type} bulletin".strip()
+    tone = gdelt_claim_tone(mode)
+    rows: list[list[str]] = []
+    for local_index in range(count):
+        global_index = start_index + local_index
+        timestamp = row_times[local_index]
+        event_id = str((seed_for_source(scenario, source_skill) % 9_000_000) + global_index + 1)
+        identifier = f"https://{domain}/gdelt-mentions/{place_slug}/{topic_slug}/{global_index + 1}"
+        row = [""] * GDELT_EXPECTED_COLUMNS[source_skill]
+        row[0] = event_id
+        row[1] = gdelt_datetime_text(timestamp - timedelta(minutes=30))
+        row[2] = gdelt_datetime_text(timestamp)
+        row[3] = "1"
+        row[4] = source_name
+        row[5] = identifier
+        row[11] = str(70 + (local_index * 4))
+        row[12] = str(900 + (local_index * 120))
+        row[13] = f"{tone - (local_index * 0.15):.2f}"
+        rows.append(row)
+    return rows
+
+
+def build_gdelt_gkg_rows(
+    *,
+    mission: dict[str, Any],
+    scenario: dict[str, Any],
+    mode: str,
+    source_skill: str,
+    count: int,
+    row_times: list[datetime],
+    start_index: int,
+) -> list[list[str]]:
+    claim_type = maybe_text(scenario.get("claim_type")) or "other"
+    place_label = gdelt_place_label(mission, scenario)
+    topic_phrase = gdelt_topic_phrase(mission, scenario) or claim_type
+    topic_slug = slugify(topic_phrase, default="topic")
+    place_slug = slugify(place_label, default="place")
+    domain = PUBLIC_DOMAINS.get(claim_type, PUBLIC_DOMAINS["other"])
+    source_common_name = f"{place_label.replace(',', '')} desk".strip()
+    latitude, longitude = shifted_coordinates(*geometry_center(mission_region(mission).get("geometry", {})), scenario)
+    tone = gdelt_claim_tone(mode)
+    topic_theme = slugify(topic_phrase, default=claim_type).replace("-", "_").upper()
+    claim_theme = slugify(claim_type, default="environment").replace("-", "_").upper()
+    location_text = f"1#{place_label}###{place_slug}#{latitude:.4f}#{longitude:.4f}"
+    rows: list[list[str]] = []
+    for local_index in range(count):
+        global_index = start_index + local_index
+        timestamp = row_times[local_index]
+        document_identifier = f"https://{domain}/gdelt-gkg/{place_slug}/{topic_slug}/{global_index + 1}"
+        row = [""] * GDELT_EXPECTED_COLUMNS[source_skill]
+        row[0] = f"{gdelt_datetime_text(timestamp)}-{global_index + 1}"
+        row[1] = gdelt_datetime_text(timestamp)
+        row[3] = source_common_name
+        row[4] = document_identifier
+        row[8] = ";".join(
+            item
+            for item in (
+                f"ENV_{claim_theme}",
+                topic_theme,
+                "ENVIRONMENT",
+            )
+            if item
+        )
+        row[10] = location_text
+        row[12] = f"{place_label.replace(',', '')} analyst"
+        row[14] = f"{place_label.replace(',', '')} council;{claim_type.replace('-', ' ')} desk"
+        row[15] = f"{tone - (local_index * 0.1):.2f},0,0,0,0,0,0"
+        row[23] = ";".join(
+            item
+            for item in (
+                place_label,
+                maybe_text(mission.get("topic")),
+                maybe_text(mission.get("objective")),
+            )
+            if item
+        )
+        rows.append(row)
+    return rows
+
+
+def build_gdelt_rows(
+    *,
+    mission: dict[str, Any],
+    scenario: dict[str, Any],
+    mode: str,
+    source_skill: str,
+    count: int,
+    row_times: list[datetime],
+    start_index: int,
+) -> list[list[str]]:
+    if source_skill == "gdelt-events-fetch":
+        return build_gdelt_events_rows(
+            mission=mission,
+            scenario=scenario,
+            mode=mode,
+            source_skill=source_skill,
+            count=count,
+            row_times=row_times,
+            start_index=start_index,
+        )
+    if source_skill == "gdelt-mentions-fetch":
+        return build_gdelt_mentions_rows(
+            mission=mission,
+            scenario=scenario,
+            mode=mode,
+            source_skill=source_skill,
+            count=count,
+            row_times=row_times,
+            start_index=start_index,
+        )
+    return build_gdelt_gkg_rows(
+        mission=mission,
+        scenario=scenario,
+        mode=mode,
+        source_skill=source_skill,
+        count=count,
+        row_times=row_times,
+        start_index=start_index,
+    )
+
+
+def raw_gdelt_download_dir(step: dict[str, Any]) -> Path:
+    configured = maybe_text(step.get("download_dir"))
+    if configured:
+        return Path(configured).expanduser().resolve()
+    artifact_path = Path(maybe_text(step.get("artifact_path"))).expanduser().resolve()
+    return artifact_path.parent / artifact_path.stem
+
+
+def generate_raw_gdelt_manifest(
+    *,
+    mission: dict[str, Any],
+    scenario: dict[str, Any],
+    mode: str,
+    source_skill: str,
+    step: dict[str, Any],
+) -> dict[str, Any]:
+    start, end = mission_window(mission)
+    row_count = record_count_for_source(source_skill, mode, scenario)
+    if row_count <= 0:
+        return {
+            "ok": True,
+            "mode": "range",
+            "selected_count": 0,
+            "downloaded_count": 0,
+            "skipped_count": 0,
+            "downloads": [],
+            "skipped": [],
+        }
+
+    download_dir = raw_gdelt_download_dir(step)
+    file_count = 1 if row_count <= 2 or mode == "sparse" else 2
+    file_count = min(file_count, row_count)
+    file_timestamps = [
+        parse_datetime(item) or shifted_datetime(start, scenario)
+        for item in datetime_labels(start, end, file_count, scenario)
+    ]
+    rows_per_file = split_counts(row_count, file_count)
+    downloads: list[dict[str, Any]] = []
+    row_offset = 0
+
+    for file_index, file_timestamp in enumerate(file_timestamps):
+        current_count = rows_per_file[file_index]
+        row_times = [
+            file_timestamp + timedelta(minutes=local_index * 5)
+            for local_index in range(current_count)
+        ]
+        rows = build_gdelt_rows(
+            mission=mission,
+            scenario=scenario,
+            mode=mode,
+            source_skill=source_skill,
+            count=current_count,
+            row_times=row_times,
+            start_index=row_offset,
+        )
+        filename = gdelt_archive_filename(source_skill, file_timestamp)
+        member_name = gdelt_member_name(source_skill, file_timestamp)
+        payload_bytes, preview_lines = build_gdelt_zip_payload(member_name=member_name, rows=rows)
+        output_path = download_dir / filename
+        write_bytes(output_path, payload_bytes)
+        request_url = f"{DEFAULT_GDELT_BASE_URL}/{filename}"
+        downloads.append(
+            {
+                "entry": {
+                    "timestamp_utc": file_timestamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "timestamp_raw": gdelt_datetime_text(file_timestamp),
+                    "url": request_url,
+                    "md5": hashlib.md5(payload_bytes).hexdigest(),
+                    "size_bytes": len(payload_bytes),
+                },
+                "request_url": request_url,
+                "output_path": str(output_path),
+                "bytes_written": len(payload_bytes),
+                "content_type": "application/zip",
+                "preview_member": member_name,
+                "preview_lines": preview_lines,
+                "validation": gdelt_validation_summary(
+                    member_name=member_name,
+                    row_count=len(rows),
+                    expected_columns=GDELT_EXPECTED_COLUMNS[source_skill],
+                ),
+            }
+        )
+        row_offset += current_count
+
+    return {
+        "ok": True,
+        "mode": "range",
+        "selected_count": len(downloads),
+        "downloaded_count": len(downloads),
+        "skipped_count": 0,
+        "downloads": downloads,
+        "skipped": [],
+    }
 
 
 def generate_gdelt_payload(*, mission: dict[str, Any], scenario: dict[str, Any], mode: str, source_skill: str) -> dict[str, Any]:
@@ -1406,6 +1868,7 @@ def generate_payload_for_source(
     scenario: dict[str, Any],
     source_skill: str,
     mode: str,
+    step: dict[str, Any],
     dependency_statuses: list[dict[str, Any]],
 ) -> Any:
     start, end = mission_window(mission)
@@ -1414,6 +1877,14 @@ def generate_payload_for_source(
     dependency_artifacts = dependency_artifact_paths(dependency_statuses)
     if source_skill == "gdelt-doc-search":
         return generate_gdelt_payload(mission=mission, scenario=scenario, mode=mode, source_skill=source_skill)
+    if source_skill in RAW_GDELT_SOURCES:
+        return generate_raw_gdelt_manifest(
+            mission=mission,
+            scenario=scenario,
+            mode=mode,
+            source_skill=source_skill,
+            step=step,
+        )
     if source_skill == "bluesky-cascade-fetch":
         return generate_bluesky_payload(mission=mission, scenario=scenario, mode=mode, source_skill=source_skill)
     if source_skill == "youtube-video-search":
@@ -1516,6 +1987,7 @@ def simulate_round(
             artifact_path = Path(maybe_text(step.get("artifact_path"))).expanduser().resolve()
             stdout_path = Path(maybe_text(step.get("stdout_path"))).expanduser().resolve()
             stderr_path = Path(maybe_text(step.get("stderr_path"))).expanduser().resolve()
+            artifact_capture = maybe_text(step.get("artifact_capture"))
 
             if artifact_path.exists():
                 if skip_existing:
@@ -1557,6 +2029,7 @@ def simulate_round(
                     scenario=scenario,
                     source_skill=source_skill,
                     mode=mode,
+                    step=step,
                     dependency_statuses=statuses,
                 )
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1564,20 +2037,23 @@ def simulate_round(
                 stderr_path.parent.mkdir(parents=True, exist_ok=True)
                 write_artifact(artifact_path, payload, pretty=True)
                 record_count = source_count(payload, source_skill)
-                write_json(
-                    stdout_path,
-                    {
-                        "step_id": step_id,
-                        "source_skill": source_skill,
-                        "scenario_id": maybe_text(scenario.get("scenario_id")),
-                        "scenario_source": scenario_source,
-                        "mode": mode,
-                        "record_count": record_count,
-                        "artifact_path": str(artifact_path),
-                        "generated_at_utc": utc_now_iso(),
-                    },
-                    pretty=True,
-                )
+                if artifact_capture == "stdout-json":
+                    write_artifact(stdout_path, payload, pretty=True)
+                else:
+                    write_json(
+                        stdout_path,
+                        {
+                            "step_id": step_id,
+                            "source_skill": source_skill,
+                            "scenario_id": maybe_text(scenario.get("scenario_id")),
+                            "scenario_source": scenario_source,
+                            "mode": mode,
+                            "record_count": record_count,
+                            "artifact_path": str(artifact_path),
+                            "generated_at_utc": utc_now_iso(),
+                        },
+                        pretty=True,
+                    )
                 write_text(
                     stderr_path,
                     f"[simulated] step_id={step_id} source_skill={source_skill} "

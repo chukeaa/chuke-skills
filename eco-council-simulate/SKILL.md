@@ -11,6 +11,7 @@ description: Materialize deterministic simulated raw artifacts and fetch executi
 - Keep this skill operator-facing and test-harness-facing, not a default production agent skill.
 - Read one already prepared `fetch_plan.json`.
 - Write only the `raw/*` artifacts and the canonical `fetch_execution.json` that downstream normalization already expects.
+- For manifest-backed sources such as raw GDELT tables, also write the sidecar ZIP files referenced by the manifest.
 - Stay deterministic and low-cost:
   - no live API calls
   - no LLM generation

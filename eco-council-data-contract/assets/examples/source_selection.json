@@ -5,12 +5,15 @@
   "round_id": "round-001",
   "agent_role": "sociologist",
   "status": "complete",
-  "summary": "Use broad public discussion sources for this round and skip policy or long-tail video sources.",
+  "summary": "Use article discovery, one GDELT bulk supplement, and one fast-moving discussion source for this round while skipping policy and long-tail video sources.",
   "task_ids": [
     "task-sociologist-round-001-01"
   ],
   "allowed_sources": [
     "gdelt-doc-search",
+    "gdelt-events-fetch",
+    "gdelt-mentions-fetch",
+    "gdelt-gkg-fetch",
     "bluesky-cascade-fetch",
     "youtube-video-search",
     "youtube-comments-fetch",
@@ -20,6 +23,7 @@
   ],
   "selected_sources": [
     "gdelt-doc-search",
+    "gdelt-gkg-fetch",
     "bluesky-cascade-fetch"
   ],
   "source_decisions": [
@@ -27,6 +31,21 @@
       "source_skill": "gdelt-doc-search",
       "selected": true,
       "reason": "Use broad article discovery for public-claim coverage."
+    },
+    {
+      "source_skill": "gdelt-events-fetch",
+      "selected": false,
+      "reason": "Event-level export files are unnecessary for this narrow smoke round because article-level discovery should anchor the first pass."
+    },
+    {
+      "source_skill": "gdelt-mentions-fetch",
+      "selected": false,
+      "reason": "Mention-volume supplement is unnecessary until claim coverage looks too sparse after article discovery."
+    },
+    {
+      "source_skill": "gdelt-gkg-fetch",
+      "selected": true,
+      "reason": "Use one GKG bulk supplement to add deterministic theme and location coverage from the same mission window."
     },
     {
       "source_skill": "bluesky-cascade-fetch",
