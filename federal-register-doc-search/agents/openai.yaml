@@ -1,4 +1,0 @@
-interface:
-  display_name: "Federal Register Doc Search"
-  short_description: "Search Federal Register documents"
-  default_prompt: "Use $federal-register-doc-search to search Federal Register documents with time, term, agency, type, and topic filters, then return structured JSON results."

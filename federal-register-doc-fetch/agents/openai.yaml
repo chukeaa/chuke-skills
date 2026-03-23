@@ -1,0 +1,4 @@
+interface:
+  display_name: "Federal Register Doc Fetch"
+  short_description: "Fetch Federal Register documents"
+  default_prompt: "Use $federal-register-doc-fetch to fetch Federal Register document results for a bounded time window and write the full JSON payload to the assigned raw artifact path."

@@ -11,6 +11,11 @@ description: Fetch AirNow Hourly AQ Obs file products from official AirNow file 
 - Return one normalized JSON record per site-hour-parameter for downstream processing.
 - Keep execution deterministic with retries, throttling, and local safety caps.
 
+## Repository Policy
+- This is the canonical AirNow station-observation skill in this repository.
+- When eco-council or OpenClaw assigns a raw artifact path, write this skill's full JSON payload to that exact path with `--output`.
+- Do not treat dry-run output as collected evidence.
+
 ## Required Environment
 - Configure runtime by environment variables (see `references/env.md`).
 - Start from `assets/config.example.env`.
@@ -65,11 +70,14 @@ Each output item in `records` is one site-hour-parameter observation with fields
 - `raw_concentration`, `unit`, `measured`
 - `source_file_url`
 
+The full raw payload also keeps request metadata, transport stats, validation output, and file-level failure details for downstream auditing.
+
 ## Scope Boundaries
 - This skill consumes AirNow hourly file products only.
 - This skill does not geocode place names.
 - This skill does not do AQI health interpretation or policy judgment.
 - This skill treats file data as preliminary and for analysis support, not regulatory decisions.
+- This skill is the canonical AirNow fetch interface for this repository.
 
 ## References
 - `references/env.md`

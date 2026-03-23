@@ -51,7 +51,7 @@ python3 scripts/eco_council_orchestrate.py prepare-round \
 ```
 
 5. Let the expert agents fetch raw artifacts into the exact `raw/` paths named by the prompt files.
-  - Public fetches can be zero-step, or can include `gdelt-doc-search`, `bluesky-cascade-fetch`, `youtube-*`, `federal-register-doc-search`, and `regulationsgov-*`, depending on audited source selection and mission source policy.
+  - Public fetches can be zero-step, or can include `gdelt-doc-search`, `bluesky-cascade-fetch`, `youtube-*`, `federal-register-doc-fetch`, and `regulationsgov-*`, depending on audited source selection and mission source policy.
   - Environment fetches can be zero-step, or can include `airnow-hourly-obs-fetch`, `usgs-water-iv-fetch`, `open-meteo-*`, `nasa-firms-fire-fetch`, and `openaq-data-fetch`, depending on audited source selection and mission source policy.
 
 6. Run the deterministic data plane after raw artifacts exist.
@@ -100,7 +100,7 @@ python3 scripts/eco_council_orchestrate.py advance-round \
 
 Use it directly when `openaq-data-fetch` needs a station-measurement artifact without pushing OpenAQ API chaining into the expert prompt.
 
-- `prepare-round` can also emit direct `federal-register-doc-search` steps for official U.S. rulemaking, notice, and policy-document discovery.
+- `prepare-round` can also emit direct `federal-register-doc-fetch` steps for official U.S. rulemaking, notice, and policy-document discovery.
   - Task inputs may override the default plain-text term with `federal_register_term`.
   - Task inputs may also constrain agency, document type, topic, section, docket ID, RIN, significance, page size, and output field set.
 

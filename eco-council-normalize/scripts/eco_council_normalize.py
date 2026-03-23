@@ -1101,12 +1101,20 @@ def normalize_public_from_federal_register(
     sha256_value: str,
 ) -> list[dict[str, Any]]:
     signals: list[dict[str, Any]] = []
+    records = payload.get("records") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        raise ValueError(
+            "Federal Register raw artifact must use the canonical federal-register-doc-fetch "
+            "payload with a top-level records array."
+        )
     query_text = ""
     if isinstance(payload, dict):
         request_obj = payload.get("request")
         if isinstance(request_obj, dict):
-            query_text = maybe_text(request_obj.get("term") or request_obj.get("search_term"))
-    for index, record in enumerate(collect_records(payload)):
+            query_text = maybe_text(request_obj.get("term"))
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
         agencies = record.get("agencies") if isinstance(record.get("agencies"), list) else []
         agency_names = [
             maybe_text(item.get("name") or item.get("raw_name") or item.get("slug"))
@@ -1154,7 +1162,7 @@ def normalize_public_from_federal_register(
                     "source_page_number": record.get("source_page_number"),
                 },
                 artifact_path=path,
-                record_locator=f"$.results[{index}]",
+                record_locator=f"$.records[{index}]",
                 sha256_value=sha256_value,
                 raw_obj=record,
             )
@@ -1310,7 +1318,7 @@ def normalize_public_source(
         return normalize_public_from_youtube_comments(path, payload, run_id=run_id, round_id=round_id, sha256_value=sha256_value)
     if source_skill == "bluesky-cascade-fetch":
         return normalize_public_from_bluesky(path, payload, run_id=run_id, round_id=round_id, sha256_value=sha256_value)
-    if source_skill in {"federal-register-doc-search", "federal-register-documents-fetch"}:
+    if source_skill == "federal-register-doc-fetch":
         return normalize_public_from_federal_register(
             path,
             payload,

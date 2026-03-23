@@ -32,7 +32,7 @@ SKILL_DIRS = {
     "bluesky-cascade-fetch": REPO_DIR / "bluesky-cascade-fetch",
     "youtube-video-search": REPO_DIR / "youtube-video-search",
     "youtube-comments-fetch": REPO_DIR / "youtube-comments-fetch",
-    "federal-register-doc-search": REPO_DIR / "federal-register-doc-search",
+    "federal-register-doc-fetch": REPO_DIR / "federal-register-doc-fetch",
     "regulationsgov-comments-fetch": REPO_DIR / "regulationsgov-comments-fetch",
     "regulationsgov-comment-detail-fetch": REPO_DIR / "regulationsgov-comment-detail-fetch",
     "airnow-hourly-obs-fetch": REPO_DIR / "airnow-hourly-obs-fetch",
@@ -49,7 +49,7 @@ FETCH_SCRIPT_PATHS = {
     "bluesky-cascade-fetch": SKILL_DIRS["bluesky-cascade-fetch"] / "scripts" / "bluesky_cascade_fetch.py",
     "youtube-video-search": SKILL_DIRS["youtube-video-search"] / "scripts" / "youtube_video_search.py",
     "youtube-comments-fetch": SKILL_DIRS["youtube-comments-fetch"] / "scripts" / "youtube_comments_fetch.py",
-    "federal-register-doc-search": SKILL_DIRS["federal-register-doc-search"] / "scripts" / "federal_register_doc_search.py",
+    "federal-register-doc-fetch": SKILL_DIRS["federal-register-doc-fetch"] / "scripts" / "federal_register_doc_fetch.py",
     "regulationsgov-comments-fetch": SKILL_DIRS["regulationsgov-comments-fetch"] / "scripts" / "regulationsgov_comments_fetch.py",
     "regulationsgov-comment-detail-fetch": SKILL_DIRS["regulationsgov-comment-detail-fetch"] / "scripts" / "regulationsgov_comment_detail_fetch.py",
     "airnow-hourly-obs-fetch": SKILL_DIRS["airnow-hourly-obs-fetch"] / "scripts" / "airnow_hourly_obs_fetch.py",
@@ -65,7 +65,7 @@ PUBLIC_SOURCES = (
     "bluesky-cascade-fetch",
     "youtube-video-search",
     "youtube-comments-fetch",
-    "federal-register-doc-search",
+    "federal-register-doc-fetch",
     "regulationsgov-comments-fetch",
     "regulationsgov-comment-detail-fetch",
 )
@@ -957,12 +957,12 @@ def build_sociologist_steps(
                 "--pretty",
             ]
             notes.append("Use the saved YouTube video artifact as the only ID source for comment collection.")
-        elif source_skill == "federal-register-doc-search":
+        elif source_skill == "federal-register-doc-fetch":
             federal_register_term = merged_task_scalar(role_tasks, "federal_register_term") or query_text
             argv = [
                 "python3",
                 str(FETCH_SCRIPT_PATHS[source_skill]),
-                "search",
+                "fetch",
                 "--term",
                 federal_register_term,
                 "--start-date",

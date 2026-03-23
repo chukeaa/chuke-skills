@@ -30,7 +30,7 @@
       "bluesky-cascade-fetch",
       "youtube-video-search",
       "youtube-comments-fetch",
-      "federal-register-doc-search",
+      "federal-register-doc-fetch",
       "regulationsgov-comments-fetch",
       "regulationsgov-comment-detail-fetch"
     ],

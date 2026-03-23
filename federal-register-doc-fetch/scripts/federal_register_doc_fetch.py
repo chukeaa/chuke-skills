@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search Federal Register documents with retries, throttling, and validation."""
+"""Fetch Federal Register documents with retries, throttling, and validation."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ DEFAULT_MAX_PAGES_PER_RUN = 10
 DEFAULT_MAX_RECORDS_PER_RUN = 250
 DEFAULT_MAX_RESPONSE_BYTES = 10_000_000
 DEFAULT_MAX_RETRY_AFTER_SECONDS = 120
-DEFAULT_USER_AGENT = "federal-register-doc-search/1.0"
+DEFAULT_USER_AGENT = "federal-register-doc-fetch/1.0"
 DEFAULT_ORDER = "newest"
 DEFAULT_FIELDS = (
     "title",
@@ -404,7 +404,7 @@ def build_runtime_config(args: argparse.Namespace) -> RuntimeConfig:
 
 
 def configure_logging(level: str, log_file: str) -> None:
-    logger = logging.getLogger("federal_register_doc_search")
+    logger = logging.getLogger("federal_register_doc_fetch")
     logger.handlers.clear()
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     formatter = logging.Formatter(
@@ -752,14 +752,15 @@ def check_config(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def search_command(args: argparse.Namespace) -> dict[str, Any]:
+def fetch_command(args: argparse.Namespace) -> dict[str, Any]:
     config = build_runtime_config(args)
     spec = build_request_spec(args, config)
     configure_logging(args.log_level, args.log_file)
-    logger = logging.getLogger("federal_register_doc_search")
+    logger = logging.getLogger("federal_register_doc_fetch")
 
     first_page_url = build_fetch_url(config.base_url, build_query_params(spec, page=1))
     payload: dict[str, Any] = {
+        "source_skill": "federal-register-doc-fetch",
         "generated_at_utc": to_rfc3339_z(datetime.now(timezone.utc)),
         "dry_run": bool(args.dry_run),
         "request": request_payload(spec, first_page_url=first_page_url),
@@ -770,7 +771,7 @@ def search_command(args: argparse.Namespace) -> dict[str, Any]:
         if args.output:
             payload["artifacts"] = {"full_payload_json": str(Path(args.output).expanduser().resolve())}
             write_json(Path(args.output).expanduser().resolve(), payload, pretty=args.pretty)
-        return {"command": "search", "ok": True, "payload": payload}
+        return {"command": "fetch", "ok": True, "payload": payload}
 
     issues = IssueCollector(max_issues=args.max_validation_issues)
     current_url = first_page_url
@@ -847,11 +848,11 @@ def search_command(args: argparse.Namespace) -> dict[str, Any]:
         output_path = Path(args.output).expanduser().resolve()
         payload["artifacts"] = {"full_payload_json": str(output_path)}
         write_json(output_path, payload, pretty=args.pretty)
-    return {"command": "search", "ok": True, "payload": payload}
+    return {"command": "fetch", "ok": True, "payload": payload}
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Search Federal Register documents with bounded filters.")
+    parser = argparse.ArgumentParser(description="Fetch Federal Register documents with bounded filters.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     check_config_parser = sub.add_parser("check-config", help="Show effective runtime configuration.")
@@ -869,41 +870,41 @@ def build_parser() -> argparse.ArgumentParser:
     check_config_parser.add_argument("--user-agent", default=None, help="Override User-Agent header.")
     check_config_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
-    search_parser = sub.add_parser("search", help="Search Federal Register documents.")
-    search_parser.add_argument("--term", default="", help="Full-text search term.")
-    search_parser.add_argument("--start-date", default="", help="Publication start date YYYY-MM-DD.")
-    search_parser.add_argument("--end-date", default="", help="Publication end date YYYY-MM-DD.")
-    search_parser.add_argument("--start-datetime", default="", help="Publication start datetime RFC3339 UTC; converted to date.")
-    search_parser.add_argument("--end-datetime", default="", help="Publication end datetime RFC3339 UTC; converted to date.")
-    search_parser.add_argument("--agency", action="append", default=[], help="Agency slug filter; repeatable.")
-    search_parser.add_argument("--document-type", action="append", default=[], help="Document type filter; repeatable.")
-    search_parser.add_argument("--topic", action="append", default=[], help="Topic slug filter; repeatable.")
-    search_parser.add_argument("--section", action="append", default=[], help="Section slug filter; repeatable.")
-    search_parser.add_argument("--docket-id", default="", help="Agency docket ID filter.")
-    search_parser.add_argument("--regulation-id-number", default="", help="RIN filter.")
-    search_parser.add_argument("--significant", default="", help="EO 12866 significant filter: 0 or 1.")
-    search_parser.add_argument("--field", action="append", default=[], help="Explicit field name; repeatable.")
-    search_parser.add_argument("--order", default=DEFAULT_ORDER, help="Order: relevance, newest, oldest, executive_order_number.")
-    search_parser.add_argument("--page-size", type=int, default=None, help="Results per page (1-1000).")
-    search_parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to fetch.")
-    search_parser.add_argument("--max-records", type=int, default=None, help="Maximum records to keep.")
-    search_parser.add_argument("--dry-run", action="store_true", help="Validate and print the first-page request only.")
-    search_parser.add_argument("--output", default="", help="Optional path for full JSON payload.")
-    search_parser.add_argument("--base-url", default="", help="Override Federal Register API base URL.")
-    search_parser.add_argument("--timeout-seconds", type=int, default=None, help="HTTP timeout in seconds.")
-    search_parser.add_argument("--max-retries", type=int, default=None, help="Maximum retry count.")
-    search_parser.add_argument("--retry-backoff-seconds", type=float, default=None, help="Initial retry backoff in seconds.")
-    search_parser.add_argument("--retry-backoff-multiplier", type=float, default=None, help="Retry backoff multiplier.")
-    search_parser.add_argument("--min-request-interval-seconds", type=float, default=None, help="Minimum interval between requests.")
-    search_parser.add_argument("--max-pages-per-run", type=int, default=None, help="Configured max-pages cap.")
-    search_parser.add_argument("--max-records-per-run", type=int, default=None, help="Configured max-records cap.")
-    search_parser.add_argument("--max-response-bytes", type=int, default=None, help="Maximum response size per page.")
-    search_parser.add_argument("--max-retry-after-seconds", type=int, default=None, help="Maximum accepted Retry-After.")
-    search_parser.add_argument("--user-agent", default=None, help="Override User-Agent header.")
-    search_parser.add_argument("--log-level", default="INFO", help="Logger level.")
-    search_parser.add_argument("--log-file", default="", help="Optional log file path.")
-    search_parser.add_argument("--max-validation-issues", type=int, default=MAX_VALIDATION_ISSUES, help="Maximum validation issues stored in output.")
-    search_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    fetch_parser = sub.add_parser("fetch", help="Fetch Federal Register documents.")
+    fetch_parser.add_argument("--term", default="", help="Full-text search term.")
+    fetch_parser.add_argument("--start-date", default="", help="Publication start date YYYY-MM-DD.")
+    fetch_parser.add_argument("--end-date", default="", help="Publication end date YYYY-MM-DD.")
+    fetch_parser.add_argument("--start-datetime", default="", help="Publication start datetime RFC3339 UTC; converted to date.")
+    fetch_parser.add_argument("--end-datetime", default="", help="Publication end datetime RFC3339 UTC; converted to date.")
+    fetch_parser.add_argument("--agency", action="append", default=[], help="Agency slug filter; repeatable.")
+    fetch_parser.add_argument("--document-type", action="append", default=[], help="Document type filter; repeatable.")
+    fetch_parser.add_argument("--topic", action="append", default=[], help="Topic slug filter; repeatable.")
+    fetch_parser.add_argument("--section", action="append", default=[], help="Section slug filter; repeatable.")
+    fetch_parser.add_argument("--docket-id", default="", help="Agency docket ID filter.")
+    fetch_parser.add_argument("--regulation-id-number", default="", help="RIN filter.")
+    fetch_parser.add_argument("--significant", default="", help="EO 12866 significant filter: 0 or 1.")
+    fetch_parser.add_argument("--field", action="append", default=[], help="Explicit field name; repeatable.")
+    fetch_parser.add_argument("--order", default=DEFAULT_ORDER, help="Order: relevance, newest, oldest, executive_order_number.")
+    fetch_parser.add_argument("--page-size", type=int, default=None, help="Results per page (1-1000).")
+    fetch_parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to fetch.")
+    fetch_parser.add_argument("--max-records", type=int, default=None, help="Maximum records to keep.")
+    fetch_parser.add_argument("--dry-run", action="store_true", help="Validate and print the first-page request only.")
+    fetch_parser.add_argument("--output", default="", help="Optional path for full JSON payload.")
+    fetch_parser.add_argument("--base-url", default="", help="Override Federal Register API base URL.")
+    fetch_parser.add_argument("--timeout-seconds", type=int, default=None, help="HTTP timeout in seconds.")
+    fetch_parser.add_argument("--max-retries", type=int, default=None, help="Maximum retry count.")
+    fetch_parser.add_argument("--retry-backoff-seconds", type=float, default=None, help="Initial retry backoff in seconds.")
+    fetch_parser.add_argument("--retry-backoff-multiplier", type=float, default=None, help="Retry backoff multiplier.")
+    fetch_parser.add_argument("--min-request-interval-seconds", type=float, default=None, help="Minimum interval between requests.")
+    fetch_parser.add_argument("--max-pages-per-run", type=int, default=None, help="Configured max-pages cap.")
+    fetch_parser.add_argument("--max-records-per-run", type=int, default=None, help="Configured max-records cap.")
+    fetch_parser.add_argument("--max-response-bytes", type=int, default=None, help="Maximum response size per page.")
+    fetch_parser.add_argument("--max-retry-after-seconds", type=int, default=None, help="Maximum accepted Retry-After.")
+    fetch_parser.add_argument("--user-agent", default=None, help="Override User-Agent header.")
+    fetch_parser.add_argument("--log-level", default="INFO", help="Logger level.")
+    fetch_parser.add_argument("--log-file", default="", help="Optional log file path.")
+    fetch_parser.add_argument("--max-validation-issues", type=int, default=MAX_VALIDATION_ISSUES, help="Maximum validation issues stored in output.")
+    fetch_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
     return parser
 
@@ -914,8 +915,8 @@ def main() -> int:
     try:
         if args.command == "check-config":
             result = check_config(args)
-        elif args.command == "search":
-            result = search_command(args)
+        elif args.command == "fetch":
+            result = fetch_command(args)
         else:
             raise ValueError(f"Unsupported command {args.command!r}")
     except Exception as exc:

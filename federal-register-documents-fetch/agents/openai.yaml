@@ -1,4 +1,0 @@
-interface:
-  display_name: "Federal Register Documents Fetch (Legacy)"
-  short_description: "Legacy alias; prefer doc-search"
-  default_prompt: "Use $federal-register-documents-fetch only for legacy compatibility with older prompts or artifacts; prefer $federal-register-doc-search for new Federal Register work."
