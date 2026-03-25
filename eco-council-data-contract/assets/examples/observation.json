@@ -10,8 +10,58 @@
   "value": 0.76,
   "unit": "index",
   "statistics": {
+    "sample_count": 67,
+    "min": 12.4,
+    "p05": 16.8,
+    "p25": 28.5,
     "mean": 42.7,
-    "p95": 74.9
+    "median": 39.2,
+    "p75": 55.4,
+    "p95": 74.9,
+    "max": 91.6,
+    "stddev": 18.3
+  },
+  "distribution_summary": {
+    "signal_count": 67,
+    "distinct_day_count": 2,
+    "distinct_source_skill_count": 2,
+    "distinct_point_count": 1,
+    "time_bucket_counts": [
+      {
+        "value": "2026-03-18",
+        "count": 34
+      },
+      {
+        "value": "2026-03-19",
+        "count": 33
+      }
+    ],
+    "source_skill_counts": [
+      {
+        "value": "open-meteo-air-quality-fetch",
+        "count": 48
+      },
+      {
+        "value": "nasa-firms-fire-fetch",
+        "count": 19
+      }
+    ],
+    "metric_counts": [
+      {
+        "value": "pm2_5",
+        "count": 48
+      },
+      {
+        "value": "fire_detection_count",
+        "count": 19
+      }
+    ],
+    "point_bucket_counts": [
+      {
+        "value": "18.788,98.985",
+        "count": 67
+      }
+    ]
   },
   "time_window": {
     "start_utc": "2026-03-18T00:00:00Z",

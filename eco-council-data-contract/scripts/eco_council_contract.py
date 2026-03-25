@@ -1732,12 +1732,41 @@ def validate_statistics(value: Any, path: str, issues: IssueCollector) -> None:
     obj = require_object(value, path, issues)
     if obj is None:
         return
-    for field_name in ("min", "max", "mean", "p95"):
+    if "sample_count" in obj:
+        sample_count = obj.get("sample_count")
+        if not is_int_not_bool(sample_count) or int(sample_count) < 0:
+            issues.add(f"{path}.sample_count", "Expected a non-negative integer or null-compatible omission.", actual=sample_count)
+    for field_name in ("min", "p05", "p25", "mean", "median", "p75", "p95", "max", "stddev"):
         if field_name not in obj:
             continue
         field_value = obj[field_name]
         if field_value is not None and not is_number(field_value):
             issues.add(f"{path}.{field_name}", "Expected a number or null.", actual=field_value)
+
+
+def validate_counted_values(value: Any, path: str, issues: IssueCollector) -> None:
+    if not isinstance(value, list):
+        issues.add(path, "Expected a list.", actual=value)
+        return
+    for index, item in enumerate(value):
+        obj = require_object(item, f"{path}[{index}]", issues)
+        if obj is None:
+            continue
+        require_string(obj, "value", f"{path}[{index}]", issues)
+        require_int(obj, "count", f"{path}[{index}]", issues, minimum=1)
+
+
+def validate_distribution_summary(value: Any, path: str, issues: IssueCollector) -> None:
+    obj = require_object(value, path, issues)
+    if obj is None:
+        return
+    require_int(obj, "signal_count", path, issues, minimum=0)
+    for field_name in ("distinct_day_count", "distinct_source_skill_count", "distinct_point_count"):
+        if field_name in obj:
+            require_int(obj, field_name, path, issues, minimum=0)
+    for field_name in ("time_bucket_counts", "source_skill_counts", "metric_counts", "point_bucket_counts"):
+        if field_name in obj:
+            validate_counted_values(obj.get(field_name), f"{path}.{field_name}", issues)
 
 
 def validate_compact_audit(value: Any, path: str, issues: IssueCollector) -> None:
@@ -1779,6 +1808,8 @@ def validate_observation_object(obj: Any, path: str, issues: IssueCollector) -> 
     require_string(record, "unit", path, issues)
     if "statistics" in record and record["statistics"] is not None:
         validate_statistics(record["statistics"], f"{path}.statistics", issues)
+    if "distribution_summary" in record and record["distribution_summary"] is not None:
+        validate_distribution_summary(record["distribution_summary"], f"{path}.distribution_summary", issues)
     validate_time_window(record.get("time_window"), f"{path}.time_window", issues)
     validate_region_scope(record.get("place_scope"), f"{path}.place_scope", issues)
     validate_string_list(record.get("quality_flags"), f"{path}.quality_flags", issues)
@@ -1850,6 +1881,8 @@ def validate_curated_observation_entry(value: Any, path: str, issues: IssueColle
         validate_region_scope(obj.get("place_scope"), f"{path}.place_scope", issues)
     if "statistics" in obj and obj["statistics"] is not None:
         validate_statistics(obj["statistics"], f"{path}.statistics", issues)
+    if "distribution_summary" in obj and obj["distribution_summary"] is not None:
+        validate_distribution_summary(obj["distribution_summary"], f"{path}.distribution_summary", issues)
     if "quality_flags" in obj:
         validate_string_list(obj.get("quality_flags"), f"{path}.quality_flags", issues)
     if "provenance_refs" in obj:
@@ -1940,6 +1973,8 @@ def validate_observation_submission_object(obj: Any, path: str, issues: IssueCol
     validate_artifact_ref(record.get("provenance"), f"{path}.provenance", issues)
     if "statistics" in record and record["statistics"] is not None:
         validate_statistics(record["statistics"], f"{path}.statistics", issues)
+    if "distribution_summary" in record and record["distribution_summary"] is not None:
+        validate_distribution_summary(record["distribution_summary"], f"{path}.distribution_summary", issues)
     if "compact_audit" in record and record["compact_audit"] is not None:
         validate_compact_audit(record["compact_audit"], f"{path}.compact_audit", issues)
     if "observation_mode" in record:

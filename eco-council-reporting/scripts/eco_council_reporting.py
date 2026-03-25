@@ -282,6 +282,27 @@ def counter_dict(values: list[str]) -> dict[str, int]:
     return dict(Counter(item for item in values if item))
 
 
+def top_counter_items(counter: Counter[str], limit: int = 8) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for key, count in counter.most_common(limit):
+        if not key or count <= 0:
+            continue
+        items.append({"value": key, "count": count})
+    return items
+
+
+def sorted_counter_items(counter: Counter[str], limit: int = 8) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for key in sorted(counter):
+        count = counter.get(key, 0)
+        if not key or count <= 0:
+            continue
+        items.append({"value": key, "count": count})
+        if len(items) >= limit:
+            break
+    return items
+
+
 def round_directory_name(round_id: str) -> str:
     return round_id.replace("-", "_")
 
@@ -678,6 +699,7 @@ def observation_signature_payload(observation: dict[str, Any]) -> dict[str, Any]
         "value": observation.get("value"),
         "unit": maybe_text(observation.get("unit")),
         "statistics": observation.get("statistics"),
+        "distribution_summary": observation.get("distribution_summary"),
         "time_window": observation.get("time_window"),
         "place_scope": observation.get("place_scope"),
         "source_skills": sorted(maybe_text(item) for item in observation.get("source_skills", []) if maybe_text(item)),
@@ -949,6 +971,7 @@ def compact_observation(observation: dict[str, Any]) -> dict[str, Any]:
         "value": observation.get("value"),
         "unit": maybe_text(observation.get("unit")),
         "statistics": compact_statistics(observation.get("statistics")),
+        "distribution_summary": compact_distribution_summary(observation.get("distribution_summary")),
         "time_window": observation.get("time_window"),
         "source_skills": [maybe_text(item) for item in observation.get("source_skills", []) if maybe_text(item)][:4],
         "metric_bundle": [maybe_text(item) for item in observation.get("metric_bundle", []) if maybe_text(item)][:6],
@@ -995,6 +1018,7 @@ def compact_observation_submission(submission: dict[str, Any]) -> dict[str, Any]
         "value": submission.get("value"),
         "unit": maybe_text(submission.get("unit")),
         "statistics": compact_statistics(submission.get("statistics")),
+        "distribution_summary": compact_distribution_summary(submission.get("distribution_summary")),
         "time_window": submission.get("time_window"),
         "meaning": truncate_text(maybe_text(submission.get("meaning")), 200),
         "worth_storing": bool(submission.get("worth_storing")),
@@ -1041,6 +1065,164 @@ def compact_observation_candidate_for_curation(candidate: dict[str, Any]) -> dic
     if isinstance(candidate.get("compact_audit"), dict):
         payload["compact_audit"] = candidate.get("compact_audit")
     return payload
+
+
+def merge_count_items(counter: Counter[str], items: Any) -> None:
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label = maybe_text(item.get("value"))
+        count = to_nonnegative_int(item.get("count"))
+        if not label or count <= 0:
+            continue
+        counter[label] += count
+
+
+def claim_day_bucket(candidate: dict[str, Any]) -> str:
+    window = candidate.get("time_window") if isinstance(candidate.get("time_window"), dict) else {}
+    start_utc = maybe_text(window.get("start_utc"))
+    if len(start_utc) >= 10:
+        return start_utc[:10]
+    end_utc = maybe_text(window.get("end_utc"))
+    if len(end_utc) >= 10:
+        return end_utc[:10]
+    return ""
+
+
+def point_bucket_from_scope(scope: Any) -> str:
+    if not isinstance(scope, dict):
+        return ""
+    geometry = scope.get("geometry") if isinstance(scope.get("geometry"), dict) else {}
+    if maybe_text(geometry.get("type")) == "Point":
+        latitude = maybe_number(geometry.get("latitude"))
+        longitude = maybe_number(geometry.get("longitude"))
+        if latitude is not None and longitude is not None:
+            return f"{latitude:.3f},{longitude:.3f}"
+    return maybe_text(scope.get("label"))
+
+
+def observation_candidate_signal_count(candidate: dict[str, Any]) -> int:
+    distribution_summary = candidate.get("distribution_summary") if isinstance(candidate.get("distribution_summary"), dict) else {}
+    signal_count = to_nonnegative_int(distribution_summary.get("signal_count"))
+    if signal_count > 0:
+        return signal_count
+    statistics_obj = candidate.get("statistics") if isinstance(candidate.get("statistics"), dict) else {}
+    signal_count = to_nonnegative_int(statistics_obj.get("sample_count"))
+    if signal_count > 0:
+        return signal_count
+    compact_audit = candidate.get("compact_audit") if isinstance(candidate.get("compact_audit"), dict) else {}
+    signal_count = to_nonnegative_int(compact_audit.get("total_candidate_count"))
+    if signal_count > 0:
+        return signal_count
+    return 1
+
+
+def build_claim_candidate_pool_summary(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    claim_type_counts = Counter(
+        maybe_text(item.get("claim_type"))
+        for item in candidates
+        if maybe_text(item.get("claim_type"))
+    )
+    source_skill_counts = Counter()
+    channel_counts = Counter()
+    day_counts = Counter()
+    total_source_signal_count = 0
+    needs_physical_validation_count = 0
+    for candidate in candidates:
+        total_source_signal_count += to_nonnegative_int(candidate.get("source_signal_count")) or 1
+        if bool(candidate.get("needs_physical_validation")):
+            needs_physical_validation_count += 1
+        public_refs = candidate.get("public_refs") if isinstance(candidate.get("public_refs"), list) else []
+        source_skills = unique_strings(
+            maybe_text(ref.get("source_skill"))
+            for ref in public_refs
+            if isinstance(ref, dict) and maybe_text(ref.get("source_skill"))
+        )
+        if not source_skills:
+            source_skills = unique_strings(candidate.get("public_source_skills", []))
+        for source_skill in source_skills:
+            source_skill_counts[source_skill] += 1
+            channel_counts[public_source_channel(source_skill)] += 1
+        day_bucket = claim_day_bucket(candidate)
+        if day_bucket:
+            day_counts[day_bucket] += 1
+    return {
+        "claim_type_counts": top_counter_items(claim_type_counts),
+        "source_skill_counts": top_counter_items(source_skill_counts),
+        "channel_counts": top_counter_items(channel_counts),
+        "day_bucket_counts": sorted_counter_items(day_counts),
+        "needs_physical_validation_count": needs_physical_validation_count,
+        "total_source_signal_count": total_source_signal_count,
+    }
+
+
+def build_observation_candidate_pool_summary(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    metric_candidate_counts = Counter()
+    metric_family_candidate_counts = Counter()
+    source_skill_candidate_counts = Counter()
+    quality_flag_counts = Counter()
+    time_bucket_signal_counts = Counter()
+    source_skill_signal_counts = Counter()
+    metric_signal_counts = Counter()
+    point_bucket_signal_counts = Counter()
+    total_signal_count = 0
+    with_statistics_count = 0
+    with_distribution_summary_count = 0
+    multi_signal_candidate_count = 0
+    for candidate in candidates:
+        metric = maybe_text(candidate.get("metric"))
+        if metric:
+            metric_candidate_counts[metric] += 1
+            metric_family_candidate_counts[observation_metric_family(metric)] += 1
+        source_skill = maybe_text(candidate.get("source_skill"))
+        if source_skill:
+            source_skill_candidate_counts[source_skill] += 1
+        for quality_flag in candidate.get("quality_flags", []):
+            text = maybe_text(quality_flag)
+            if text:
+                quality_flag_counts[text] += 1
+        signal_count = observation_candidate_signal_count(candidate)
+        total_signal_count += signal_count
+        if signal_count > 1:
+            multi_signal_candidate_count += 1
+        if isinstance(candidate.get("statistics"), dict):
+            with_statistics_count += 1
+        distribution_summary = candidate.get("distribution_summary") if isinstance(candidate.get("distribution_summary"), dict) else {}
+        if distribution_summary:
+            with_distribution_summary_count += 1
+            merge_count_items(time_bucket_signal_counts, distribution_summary.get("time_bucket_counts"))
+            merge_count_items(source_skill_signal_counts, distribution_summary.get("source_skill_counts"))
+            merge_count_items(metric_signal_counts, distribution_summary.get("metric_counts"))
+            merge_count_items(point_bucket_signal_counts, distribution_summary.get("point_bucket_counts"))
+            continue
+        if source_skill:
+            source_skill_signal_counts[source_skill] += signal_count
+        if metric:
+            metric_signal_counts[metric] += signal_count
+        day_bucket = claim_day_bucket(candidate)
+        if day_bucket:
+            time_bucket_signal_counts[day_bucket] += signal_count
+        point_bucket = point_bucket_from_scope(candidate.get("place_scope"))
+        if point_bucket:
+            point_bucket_signal_counts[point_bucket] += signal_count
+    return {
+        "metric_candidate_counts": top_counter_items(metric_candidate_counts),
+        "metric_family_candidate_counts": top_counter_items(metric_family_candidate_counts),
+        "source_skill_candidate_counts": top_counter_items(source_skill_candidate_counts),
+        "quality_flag_counts": top_counter_items(quality_flag_counts),
+        "distribution_coverage": {
+            "with_statistics_count": with_statistics_count,
+            "with_distribution_summary_count": with_distribution_summary_count,
+            "multi_signal_candidate_count": multi_signal_candidate_count,
+            "total_signal_count": total_signal_count,
+            "time_bucket_signal_counts": sorted_counter_items(time_bucket_signal_counts),
+            "source_skill_signal_counts": top_counter_items(source_skill_signal_counts),
+            "metric_signal_counts": top_counter_items(metric_signal_counts),
+            "point_bucket_signal_counts": sorted_counter_items(point_bucket_signal_counts),
+        },
+    }
 
 
 def ranked_claim_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1124,6 +1306,7 @@ def candidate_observation_entry_from_candidate(candidate: dict[str, Any], claims
         "time_window": candidate.get("time_window"),
         "place_scope": candidate.get("place_scope"),
         "statistics": candidate.get("statistics"),
+        "distribution_summary": candidate.get("distribution_summary"),
         "quality_flags": candidate.get("quality_flags", []),
         "component_roles": [],
     }
@@ -1754,14 +1937,52 @@ def maybe_number(value: Any) -> float | None:
         return None
 
 
-def compact_statistics(value: Any) -> dict[str, float | None] | None:
+def compact_count_items(value: Any, *, limit: int = 6) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        label = maybe_text(item.get("value"))
+        count = to_nonnegative_int(item.get("count"))
+        if not label or count <= 0:
+            continue
+        items.append({"value": label, "count": count})
+        if len(items) >= limit:
+            break
+    return items
+
+
+def compact_distribution_summary(value: Any, *, limit: int = 6) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    compacted: dict[str, float | None] = {}
-    for key in ("min", "max", "mean", "p95"):
+    compacted: dict[str, Any] = {}
+    signal_count = to_nonnegative_int(value.get("signal_count"))
+    if signal_count > 0:
+        compacted["signal_count"] = signal_count
+    for field_name in ("distinct_day_count", "distinct_source_skill_count", "distinct_point_count"):
+        count = to_nonnegative_int(value.get(field_name))
+        if count > 0:
+            compacted[field_name] = count
+    for field_name in ("time_bucket_counts", "source_skill_counts", "metric_counts", "point_bucket_counts"):
+        items = compact_count_items(value.get(field_name), limit=limit)
+        if items:
+            compacted[field_name] = items
+    return compacted or None
+
+
+def compact_statistics(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    compacted: dict[str, Any] = {}
+    sample_count = to_nonnegative_int(value.get("sample_count"))
+    if sample_count > 0:
+        compacted["sample_count"] = sample_count
+    for key in ("min", "p05", "p25", "mean", "median", "p75", "p95", "max", "stddev"):
         number = maybe_number(value.get(key))
         compacted[key] = round(number, 3) if number is not None else None
-    if all(number is None for number in compacted.values()):
+    if all(number is None for key, number in compacted.items() if key != "sample_count") and "sample_count" not in compacted:
         return None
     return compacted
 
@@ -2116,6 +2337,8 @@ def hydrate_observation_submissions_with_observations(
                 item["submission_id"] = observation_submission_id(canonical_observation_id)
             if not isinstance(item.get("statistics"), dict) and isinstance(observation.get("statistics"), dict):
                 item["statistics"] = observation.get("statistics")
+            if not isinstance(item.get("distribution_summary"), dict) and isinstance(observation.get("distribution_summary"), dict):
+                item["distribution_summary"] = observation.get("distribution_summary")
             if not isinstance(item.get("time_window"), dict) and isinstance(observation.get("time_window"), dict):
                 item["time_window"] = observation.get("time_window")
             if not maybe_text(item.get("unit")) and maybe_text(observation.get("unit")):
@@ -2400,10 +2623,7 @@ def build_claim_curation_draft(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     candidates = state.get("claim_candidates_current", []) if isinstance(state.get("claim_candidates_current"), list) else []
-    constraints = mission_constraints(mission)
-    limit = max(1, int(constraints.get("claim_target_per_round") or constraints.get("max_claims_per_round") or 3))
-    selected = ranked_claim_candidates(candidates)[:limit]
-    status = "complete" if candidates else "blocked"
+    status = "pending" if candidates else "blocked"
     payload = {
         "schema_version": SCHEMA_VERSION,
         "curation_id": f"claim-curation-{round_id}",
@@ -2412,11 +2632,11 @@ def build_claim_curation_draft(
         "agent_role": "sociologist",
         "status": status,
         "summary": (
-            f"Review {len(candidates)} claim candidates and curate an auditable public-claim library for this round."
+            f"Pending agent curation across {len(candidates)} claim candidates for this round."
             if candidates
             else "No claim candidates were available for curation."
         ),
-        "curated_claims": [candidate_claim_entry_from_candidate(item) for item in selected],
+        "curated_claims": [],
         "rejected_candidate_ids": [],
         "open_questions": [],
         "recommended_next_actions": [],
@@ -2433,13 +2653,7 @@ def build_observation_curation_draft(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     candidates = state.get("observation_candidates_current", []) if isinstance(state.get("observation_candidates_current"), list) else []
-    focus_claims = state.get("claim_candidates_current", []) if isinstance(state.get("claim_candidates_current"), list) else []
-    if not focus_claims:
-        focus_claims = state.get("claims", []) if isinstance(state.get("claims"), list) else []
-    constraints = mission_constraints(mission)
-    limit = max(4, int(constraints.get("claim_target_per_round") or constraints.get("max_claims_per_round") or 3) * 2)
-    ordered = representative_observation_order(candidates, focus_claims)
-    status = "complete" if candidates else "blocked"
+    status = "pending" if candidates else "blocked"
     payload = {
         "schema_version": SCHEMA_VERSION,
         "curation_id": f"observation-curation-{round_id}",
@@ -2448,11 +2662,11 @@ def build_observation_curation_draft(
         "agent_role": "environmentalist",
         "status": status,
         "summary": (
-            f"Review {len(candidates)} observation candidates and curate atomic or composite physical evidence for this round."
+            f"Pending agent curation across {len(candidates)} observation candidates for this round."
             if candidates
             else "No observation candidates were available for curation."
         ),
-        "curated_observations": [candidate_observation_entry_from_candidate(item, focus_claims) for item in ordered[:limit]],
+        "curated_observations": [],
         "rejected_candidate_ids": [],
         "open_questions": [],
         "recommended_next_actions": [],
@@ -2466,6 +2680,8 @@ def build_claim_curation_instructions() -> list[str]:
     return [
         "Return one JSON object only, shaped like claim-curation.",
         "Review the full candidate public-claim pool before deciding what enters the auditable library.",
+        "Treat draft_curation as a blank scaffold, not as a recommended shortlist.",
+        "Use candidate_pool.summary to preserve claim-type, channel, source-skill, and time coverage instead of selecting only the most repeated narratives.",
         "You may merge multiple candidate_claim_ids into one curated claim when they express the same public narrative.",
         "Use only claim_ids and candidate_claim_ids already present in the packet.",
         "Prefer rejected_candidate_ids for discarded items; reserve worth_storing=false for rare edge cases you still want explicitly recorded.",
@@ -2479,8 +2695,12 @@ def build_observation_curation_instructions() -> list[str]:
     return [
         "Return one JSON object only, shaped like observation-curation.",
         "Review the full candidate physical-observation pool before deciding what enters the auditable library.",
+        "Treat draft_curation as a blank scaffold, not as a recommended shortlist.",
+        "Use candidate_pool.summary to preserve metric-family, source-skill, time, and spatial coverage instead of retaining only repeated atomic observations.",
         "You may keep observations atomic or combine multiple candidate_observation_ids into one composite observation.",
         "Composite observations must explicitly fill candidate_observation_ids, source_skills, metric_bundle, evidence_role, and component_roles.",
+        "Use candidate statistics and distribution_summary when deciding whether one candidate is representative enough or whether multiple candidates should be combined.",
+        "If you combine heterogeneous metrics or units, do not invent rolled-up numeric summaries; only provide composite value/statistics when you can defend the metric and unit.",
         "Use evidence_role and component_roles to distinguish primary, contextual, contradictory, or mixed parts of the observation.",
         "Do not let context-only weather background stand in for direct support unless the packet evidence itself justifies it.",
         "Use only candidate observation ids and candidate claim context already present in the packet.",
@@ -2519,6 +2739,7 @@ def build_claim_curation_packet(
         "context": context,
         "candidate_pool": {
             "candidate_count": len(candidates),
+            "summary": build_claim_candidate_pool_summary(candidates),
             "claim_candidates": [compact_claim_candidate_for_curation(item) for item in candidates],
         },
         "instructions": build_claim_curation_instructions(),
@@ -2574,6 +2795,7 @@ def build_observation_curation_packet(
         "candidate_pool": {
             "claim_candidate_count": len(claim_candidates),
             "observation_candidate_count": len(observation_candidates),
+            "summary": build_observation_candidate_pool_summary(observation_candidates),
             "claim_candidates": [compact_claim_candidate_for_curation(item) for item in claim_candidates],
             "observation_candidates": [compact_observation_candidate_for_curation(item) for item in observation_candidates],
         },
@@ -2606,7 +2828,7 @@ def claim_curation_prompt_text(*, packet_path: Path, packet: dict[str, Any]) -> 
         "Then follow these rules:",
         "1. Treat packet `instructions` as binding.",
         "2. Review `task_scope`, `context`, and `candidate_pool` before editing.",
-        "3. Start from `draft_curation` inside the packet, but revise it freely when the packet evidence warrants it.",
+        "3. Use `draft_curation` only as a scaffold; the final curated set must be chosen from the full candidate pool.",
         "4. Return only one JSON object shaped like claim-curation.",
         "5. Keep `schema_version`, `run_id`, `round_id`, and `agent_role` consistent with the packet.",
         "6. Do not return markdown, prose, code fences, or extra commentary.",
@@ -2636,7 +2858,7 @@ def observation_curation_prompt_text(*, packet_path: Path, packet: dict[str, Any
         "Then follow these rules:",
         "1. Treat packet `instructions` as binding.",
         "2. Review `task_scope`, `context`, and `candidate_pool` before editing.",
-        "3. Start from `draft_curation` inside the packet, but revise it freely when the packet evidence warrants it.",
+        "3. Use `draft_curation` only as a scaffold; the final curated set must be chosen from the full candidate pool.",
         "4. Return only one JSON object shaped like observation-curation.",
         "5. Keep `schema_version`, `run_id`, `round_id`, and `agent_role` consistent with the packet.",
         "6. Do not return markdown, prose, code fences, or extra commentary.",

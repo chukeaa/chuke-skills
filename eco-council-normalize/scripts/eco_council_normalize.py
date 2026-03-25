@@ -402,6 +402,32 @@ def maybe_number(value: Any) -> float | None:
     return None
 
 
+def maybe_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        return int(value) if value >= 0 else None
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
+def point_bucket_key(latitude: Any, longitude: Any) -> str:
+    lat = maybe_number(latitude)
+    lon = maybe_number(longitude)
+    if lat is None or lon is None:
+        return ""
+    return f"{lat:.3f},{lon:.3f}"
+
+
 def canonical_environment_metric(value: Any) -> str:
     text = maybe_text(value)
     if not text:
@@ -495,14 +521,52 @@ def claim_priority_metric_families(claims: list[dict[str, Any]]) -> list[str]:
     return unique_strings(ordered)
 
 
-def compact_statistics(statistics_obj: Any) -> dict[str, float | None] | None:
+def compact_count_items(value: Any, *, limit: int = 6) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        label = maybe_text(item.get("value"))
+        count = maybe_nonnegative_int(item.get("count"))
+        if not label or count is None or count <= 0:
+            continue
+        items.append({"value": label, "count": count})
+        if len(items) >= limit:
+            break
+    return items
+
+
+def compact_distribution_summary(distribution_obj: Any, *, limit: int = 6) -> dict[str, Any] | None:
+    if not isinstance(distribution_obj, dict):
+        return None
+    compacted: dict[str, Any] = {}
+    signal_count = maybe_nonnegative_int(distribution_obj.get("signal_count"))
+    if signal_count is not None:
+        compacted["signal_count"] = signal_count
+    for field_name in ("distinct_day_count", "distinct_source_skill_count", "distinct_point_count"):
+        count = maybe_nonnegative_int(distribution_obj.get(field_name))
+        if count is not None:
+            compacted[field_name] = count
+    for field_name in ("time_bucket_counts", "source_skill_counts", "metric_counts", "point_bucket_counts"):
+        items = compact_count_items(distribution_obj.get(field_name), limit=limit)
+        if items:
+            compacted[field_name] = items
+    return compacted or None
+
+
+def compact_statistics(statistics_obj: Any) -> dict[str, Any] | None:
     if not isinstance(statistics_obj, dict):
         return None
-    compacted: dict[str, float | None] = {}
-    for key in ("min", "max", "mean", "p95"):
+    compacted: dict[str, Any] = {}
+    sample_count = maybe_nonnegative_int(statistics_obj.get("sample_count"))
+    if sample_count is not None:
+        compacted["sample_count"] = sample_count
+    for key in ("min", "p05", "p25", "mean", "median", "p75", "p95", "max", "stddev"):
         value = maybe_number(statistics_obj.get(key))
         compacted[key] = round(value, 3) if value is not None else None
-    if all(value is None for value in compacted.values()):
+    if all(value is None for key, value in compacted.items() if key != "sample_count") and "sample_count" not in compacted:
         return None
     return compacted
 
@@ -781,6 +845,18 @@ def top_counter_items(counter: Counter[str], limit: int = 5) -> list[dict[str, A
     return items
 
 
+def sorted_counter_items(counter: Counter[str], limit: int = 5) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for key in sorted(counter):
+        count = counter.get(key, 0)
+        if not key or count <= 0:
+            continue
+        items.append({"value": key, "count": count})
+        if len(items) >= limit:
+            break
+    return items
+
+
 def top_counter_text(counter: Counter[str], limit: int = 3) -> str:
     parts = [f"{item['value']} ({item['count']})" for item in top_counter_items(counter, limit=limit)]
     return ", ".join(parts)
@@ -989,13 +1065,13 @@ def emit_row_id(prefix: str, index: int) -> str:
     return f"{prefix}-{index:03d}"
 
 
-def percentile95(values: list[float]) -> float | None:
+def percentile(values: list[float], quantile: float) -> float | None:
     if not values:
         return None
     if len(values) == 1:
         return values[0]
     ordered = sorted(values)
-    position = 0.95 * (len(ordered) - 1)
+    position = quantile * (len(ordered) - 1)
     lower = math.floor(position)
     upper = math.ceil(position)
     if lower == upper:
@@ -1004,6 +1080,10 @@ def percentile95(values: list[float]) -> float | None:
     upper_value = ordered[upper]
     weight = position - lower
     return lower_value + (upper_value - lower_value) * weight
+
+
+def percentile95(values: list[float]) -> float | None:
+    return percentile(values, 0.95)
 
 
 def artifact_ref(signal: dict[str, Any]) -> dict[str, Any]:
@@ -2557,13 +2637,23 @@ def public_group_compact_audit(items: list[dict[str, Any]]) -> dict[str, Any]:
     )
 
 
-def observation_group_compact_audit(group: list[dict[str, Any]]) -> dict[str, Any]:
+def observation_group_compact_audit(
+    group: list[dict[str, Any]],
+    *,
+    metric_override: str | None = None,
+) -> dict[str, Any]:
+    distribution_summary = distribution_summary_from_environment_group(group, metric_override=metric_override)
     source_counts = Counter(maybe_text(item.get("source_skill")) for item in group)
     day_counts = Counter(
         parsed.date().isoformat()
         for item in group
         for parsed in [parse_loose_datetime(item.get("observed_at_utc") or item.get("window_start_utc") or item.get("window_end_utc"))]
         if parsed is not None
+    )
+    point_counts = Counter(
+        point_bucket_key(item.get("latitude"), item.get("longitude"))
+        for item in group
+        if point_bucket_key(item.get("latitude"), item.get("longitude"))
     )
     values = [float(item["value"]) for item in group if maybe_number(item.get("value")) is not None]
     missing_dimensions: list[str] = []
@@ -2577,7 +2667,7 @@ def observation_group_compact_audit(group: list[dict[str, Any]]) -> dict[str, An
         coverage_summary=(
             f"Aggregated {len(group)} raw environment signals into one canonical observation while retaining summary statistics."
         ),
-        coverage_dimensions=["metric", "time-window", "place-scope", "distribution-summary", "extrema-summary"],
+        coverage_dimensions=["metric", "time-window", "place-scope", "distribution-summary", "extrema-summary", "source-skill"],
         missing_dimensions=missing_dimensions,
         concentration_flags=[],
         sampling_notes=[
@@ -2588,8 +2678,53 @@ def observation_group_compact_audit(group: list[dict[str, Any]]) -> dict[str, An
                 else "Observed value range was unavailable."
             ),
             f"Observed days: {top_counter_text(day_counts, limit=3)}" if day_counts else "Observed-day coverage was unavailable.",
+            (
+                f"Signal count retained in summary: {maybe_nonnegative_int(distribution_summary.get('signal_count')) or len(group)}."
+                if isinstance(distribution_summary, dict)
+                else f"Signal count retained in summary: {len(group)}."
+            ),
+            f"Distinct rounded points: {len(point_counts)}." if point_counts else "Spatial point spread was unavailable.",
         ],
     )
+
+
+def distribution_summary_from_environment_group(
+    group: list[dict[str, Any]],
+    *,
+    metric_override: str | None = None,
+) -> dict[str, Any]:
+    canonical_metric_override = canonical_environment_metric(metric_override) if maybe_text(metric_override) else ""
+    day_counts = Counter(
+        parsed.date().isoformat()
+        for item in group
+        for parsed in [parse_loose_datetime(item.get("observed_at_utc") or item.get("window_start_utc") or item.get("window_end_utc"))]
+        if parsed is not None
+    )
+    source_counts = Counter(
+        maybe_text(item.get("source_skill"))
+        for item in group
+        if maybe_text(item.get("source_skill"))
+    )
+    metric_counts = Counter(
+        canonical_metric_override or canonical_environment_metric(item.get("metric"))
+        for item in group
+        if canonical_metric_override or maybe_text(item.get("metric"))
+    )
+    point_counts = Counter(
+        point_bucket_key(item.get("latitude"), item.get("longitude"))
+        for item in group
+        if point_bucket_key(item.get("latitude"), item.get("longitude"))
+    )
+    return {
+        "signal_count": len(group),
+        "distinct_day_count": len(day_counts),
+        "distinct_source_skill_count": len(source_counts),
+        "distinct_point_count": len(point_counts),
+        "time_bucket_counts": sorted_counter_items(day_counts, limit=10),
+        "source_skill_counts": top_counter_items(source_counts, limit=10),
+        "metric_counts": top_counter_items(metric_counts, limit=10),
+        "point_bucket_counts": sorted_counter_items(point_counts, limit=10),
+    }
 
 
 def public_signals_to_claims(
@@ -2747,12 +2882,30 @@ def first_datetime_and_last(values: list[dict[str, Any]]) -> tuple[str, str] | N
 
 def aggregate_stats(values: list[float]) -> dict[str, float | None]:
     if not values:
-        return {"min": None, "max": None, "mean": None, "p95": None}
+        return {
+            "sample_count": 0,
+            "min": None,
+            "p05": None,
+            "p25": None,
+            "mean": None,
+            "median": None,
+            "p75": None,
+            "p95": None,
+            "max": None,
+            "stddev": None,
+        }
+    stddev = statistics.pstdev(values) if len(values) > 1 else 0.0
     return {
+        "sample_count": len(values),
         "min": min(values),
+        "p05": percentile(values, 0.05),
+        "p25": percentile(values, 0.25),
         "max": max(values),
         "mean": statistics.fmean(values),
+        "median": statistics.median(values),
+        "p75": percentile(values, 0.75),
         "p95": percentile95(values),
+        "stddev": stddev,
     }
 
 
@@ -3429,7 +3582,8 @@ def environment_signals_to_observations(
             "place_scope": derive_place_scope(group, mission_scope),
             "quality_flags": quality_flags,
             "provenance": artifact_ref(group[0]),
-            "compact_audit": observation_group_compact_audit(group),
+            "compact_audit": observation_group_compact_audit(group, metric_override=output_metric),
+            "distribution_summary": distribution_summary_from_environment_group(group, metric_override=output_metric),
         }
         validate_payload("observation", observation)
         observations.append(observation)
@@ -3451,6 +3605,7 @@ def environment_signals_to_observations(
                 sampling_notes=[],
             ),
         )
+        item.setdefault("distribution_summary", default_distribution_summary_from_observation(item))
         validate_payload("observation", item)
         observations.append(item)
         counter += 1
@@ -3613,6 +3768,7 @@ def observation_signature_payload(observation: dict[str, Any]) -> dict[str, Any]
         "value": observation.get("value"),
         "unit": maybe_text(observation.get("unit")),
         "statistics": observation.get("statistics"),
+        "distribution_summary": observation.get("distribution_summary"),
         "time_window": observation.get("time_window"),
         "place_scope": observation.get("place_scope"),
         "source_skills": sorted(maybe_text(item) for item in observation.get("source_skills", []) if maybe_text(item)),
@@ -3780,6 +3936,8 @@ def hydrate_observation_submissions_with_observations(
                 item["submission_id"] = observation_submission_id(canonical_observation_id)
             if not isinstance(item.get("statistics"), dict) and isinstance(observation.get("statistics"), dict):
                 item["statistics"] = observation.get("statistics")
+            if not isinstance(item.get("distribution_summary"), dict) and isinstance(observation.get("distribution_summary"), dict):
+                item["distribution_summary"] = observation.get("distribution_summary")
             if not isinstance(item.get("time_window"), dict) and isinstance(observation.get("time_window"), dict):
                 item["time_window"] = observation.get("time_window")
             if not maybe_text(item.get("unit")) and maybe_text(observation.get("unit")):
@@ -4074,6 +4232,7 @@ def compact_observation(observation: dict[str, Any]) -> dict[str, Any]:
         "value": observation.get("value"),
         "unit": maybe_text(observation.get("unit")),
         "statistics": compact_statistics(observation.get("statistics")),
+        "distribution_summary": compact_distribution_summary(observation.get("distribution_summary")),
         "time_window": observation.get("time_window"),
         "source_skills": [maybe_text(item) for item in observation.get("source_skills", []) if maybe_text(item)][:4],
         "metric_bundle": [maybe_text(item) for item in observation.get("metric_bundle", []) if maybe_text(item)][:6],
@@ -4120,6 +4279,7 @@ def compact_observation_submission(submission: dict[str, Any]) -> dict[str, Any]
         "value": submission.get("value"),
         "unit": maybe_text(submission.get("unit")),
         "statistics": compact_statistics(submission.get("statistics")),
+        "distribution_summary": compact_distribution_summary(submission.get("distribution_summary")),
         "time_window": submission.get("time_window"),
         "meaning": truncate_text(maybe_text(submission.get("meaning")), 200),
         "worth_storing": bool(submission.get("worth_storing")),
@@ -4434,6 +4594,7 @@ def observations_from_submissions(submissions: list[dict[str, Any]]) -> list[dic
             "candidate_observation_ids",
             "provenance_refs",
             "component_roles",
+            "distribution_summary",
         ):
             value = submission.get(field_name)
             if value is not None:
@@ -4624,35 +4785,263 @@ def compact_audit_from_curated_observation_candidates(
         if isinstance(count, int) and count > 0:
             total_candidate_count += count
         else:
-            total_candidate_count += 1
+            total_candidate_count += distribution_signal_count(candidate)
     return build_compact_audit(
         total_candidate_count=max(1, total_candidate_count),
         retained_count=max(1, len(candidates)),
         coverage_summary=(
-            f"Curated this observation from {len(candidates)} candidate observations across "
-            f"{len(source_skills) or 1} source skills and {len(metric_bundle) or 1} metrics."
+            f"Curated this observation from {len(candidates)} candidate observations representing "
+            f"{max(1, total_candidate_count)} normalized signals across {len(source_skills) or 1} source skills "
+            f"and {len(metric_bundle) or 1} metrics."
         ),
-        coverage_dimensions=coverage_dimensions or ["metric-family", "source-skill", "time-window"],
+        coverage_dimensions=coverage_dimensions or ["metric-family", "source-skill", "time-window", "distribution-summary", "point-distribution"],
         missing_dimensions=missing_dimensions,
         concentration_flags=concentration_flags,
         sampling_notes=sampling_notes,
     )
 
 
-def aggregate_candidate_statistics(candidates: list[dict[str, Any]]) -> dict[str, float | None] | None:
-    values: list[float] = []
-    for candidate in candidates:
-        value = maybe_number(candidate.get("value"))
-        if value is not None:
-            values.append(float(value))
-            continue
-        stats_obj = candidate.get("statistics") if isinstance(candidate.get("statistics"), dict) else {}
-        mean_value = maybe_number(stats_obj.get("mean"))
-        if mean_value is not None:
-            values.append(float(mean_value))
-    if not values:
+def aggregate_candidate_statistics(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    metrics = {
+        canonical_environment_metric(candidate.get("metric"))
+        for candidate in candidates
+        if maybe_text(candidate.get("metric"))
+    }
+    units = {
+        maybe_text(candidate.get("unit"))
+        for candidate in candidates
+        if maybe_text(candidate.get("unit"))
+    }
+    if len(metrics) > 1 or len(units) > 1:
         return None
-    return aggregate_stats(values)
+    weighted_rows: list[dict[str, Any]] = []
+    for candidate in candidates:
+        stats_obj = candidate.get("statistics") if isinstance(candidate.get("statistics"), dict) else {}
+        sample_count = maybe_nonnegative_int(stats_obj.get("sample_count")) or 1
+        value = maybe_number(candidate.get("value"))
+        row = {
+            "sample_count": sample_count,
+            "min": maybe_number(stats_obj.get("min")),
+            "p05": maybe_number(stats_obj.get("p05")),
+            "p25": maybe_number(stats_obj.get("p25")),
+            "mean": maybe_number(stats_obj.get("mean")),
+            "median": maybe_number(stats_obj.get("median")),
+            "p75": maybe_number(stats_obj.get("p75")),
+            "p95": maybe_number(stats_obj.get("p95")),
+            "max": maybe_number(stats_obj.get("max")),
+            "stddev": maybe_number(stats_obj.get("stddev")),
+        }
+        if row["mean"] is None and value is not None:
+            row["mean"] = float(value)
+        if row["median"] is None:
+            row["median"] = row["mean"]
+        if row["min"] is None:
+            row["min"] = value if value is not None else row["mean"]
+        if row["max"] is None:
+            row["max"] = value if value is not None else row["mean"]
+        if row["p05"] is None:
+            row["p05"] = row["min"]
+        if row["p25"] is None:
+            row["p25"] = row["median"] if row["median"] is not None else row["mean"]
+        if row["p75"] is None:
+            row["p75"] = row["median"] if row["median"] is not None else row["mean"]
+        if row["p95"] is None:
+            row["p95"] = row["max"]
+        if all(row[field_name] is None for field_name in ("min", "p05", "p25", "mean", "median", "p75", "p95", "max")):
+            continue
+        weighted_rows.append(row)
+    if not weighted_rows:
+        return None
+    total_sample_count = sum(int(row["sample_count"]) for row in weighted_rows)
+
+    def weighted_average(field_name: str) -> float | None:
+        numerator = 0.0
+        denominator = 0
+        for row in weighted_rows:
+            row_value = maybe_number(row.get(field_name))
+            if row_value is None:
+                continue
+            weight = int(row["sample_count"])
+            numerator += row_value * weight
+            denominator += weight
+        if denominator <= 0:
+            return None
+        return numerator / denominator
+
+    mean_value = weighted_average("mean")
+    stddev_value = None
+    if mean_value is not None:
+        variance_numerator = 0.0
+        variance_denominator = 0
+        for row in weighted_rows:
+            row_mean = maybe_number(row.get("mean"))
+            if row_mean is None:
+                continue
+            weight = int(row["sample_count"])
+            row_stddev = maybe_number(row.get("stddev")) or 0.0
+            variance_numerator += weight * ((row_stddev ** 2) + ((row_mean - mean_value) ** 2))
+            variance_denominator += weight
+        if variance_denominator > 0:
+            stddev_value = math.sqrt(variance_numerator / variance_denominator)
+
+    min_value = min(
+        maybe_number(row.get("min"))
+        for row in weighted_rows
+        if maybe_number(row.get("min")) is not None
+    )
+    max_value = max(
+        maybe_number(row.get("max"))
+        for row in weighted_rows
+        if maybe_number(row.get("max")) is not None
+    )
+    return compact_statistics(
+        {
+            "sample_count": total_sample_count,
+            "min": min_value,
+            "p05": weighted_average("p05"),
+            "p25": weighted_average("p25"),
+            "mean": mean_value,
+            "median": weighted_average("median"),
+            "p75": weighted_average("p75"),
+            "p95": weighted_average("p95"),
+            "max": max_value,
+            "stddev": stddev_value,
+        }
+    )
+
+
+def merge_count_items(counter: Counter[str], items: Any) -> None:
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label = maybe_text(item.get("value"))
+        count = maybe_nonnegative_int(item.get("count"))
+        if not label or count is None or count <= 0:
+            continue
+        counter[label] += count
+
+
+def distribution_signal_count(candidate: dict[str, Any]) -> int:
+    distribution_summary = candidate.get("distribution_summary") if isinstance(candidate.get("distribution_summary"), dict) else {}
+    signal_count = maybe_nonnegative_int(distribution_summary.get("signal_count"))
+    if signal_count is not None and signal_count > 0:
+        return signal_count
+    stats_obj = candidate.get("statistics") if isinstance(candidate.get("statistics"), dict) else {}
+    signal_count = maybe_nonnegative_int(stats_obj.get("sample_count"))
+    if signal_count is not None and signal_count > 0:
+        return signal_count
+    compact_audit = candidate.get("compact_audit") if isinstance(candidate.get("compact_audit"), dict) else {}
+    signal_count = maybe_nonnegative_int(compact_audit.get("total_candidate_count"))
+    if signal_count is not None and signal_count > 0:
+        return signal_count
+    return 1
+
+
+def point_bucket_from_scope(scope: Any) -> str:
+    if not isinstance(scope, dict):
+        return ""
+    geometry = scope.get("geometry") if isinstance(scope.get("geometry"), dict) else {}
+    if maybe_text(geometry.get("type")) == "Point":
+        return point_bucket_key(geometry.get("latitude"), geometry.get("longitude"))
+    return maybe_text(scope.get("label"))
+
+
+def day_bucket_from_time_window(window: Any) -> str:
+    if not isinstance(window, dict):
+        return ""
+    start_utc = maybe_text(window.get("start_utc"))
+    if len(start_utc) >= 10:
+        return start_utc[:10]
+    end_utc = maybe_text(window.get("end_utc"))
+    if len(end_utc) >= 10:
+        return end_utc[:10]
+    return ""
+
+
+def default_distribution_summary_from_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    signal_count = distribution_signal_count(observation)
+    day_counter: Counter[str] = Counter()
+    day_bucket = day_bucket_from_time_window(observation.get("time_window"))
+    if day_bucket:
+        day_counter[day_bucket] += signal_count
+    source_counter: Counter[str] = Counter()
+    source_skill = maybe_text(observation.get("source_skill"))
+    if source_skill:
+        source_counter[source_skill] += signal_count
+    metric_counter: Counter[str] = Counter()
+    metric = maybe_text(observation.get("metric"))
+    if metric:
+        metric_counter[metric] += signal_count
+    point_counter: Counter[str] = Counter()
+    point_bucket = point_bucket_from_scope(observation.get("place_scope"))
+    if point_bucket:
+        point_counter[point_bucket] += signal_count
+    return {
+        "signal_count": signal_count,
+        "distinct_day_count": len(day_counter),
+        "distinct_source_skill_count": len(source_counter),
+        "distinct_point_count": len(point_counter),
+        "time_bucket_counts": sorted_counter_items(day_counter, limit=10),
+        "source_skill_counts": top_counter_items(source_counter, limit=10),
+        "metric_counts": top_counter_items(metric_counter, limit=10),
+        "point_bucket_counts": sorted_counter_items(point_counter, limit=10),
+    }
+
+
+def aggregate_candidate_distribution_summary(
+    candidates: list[dict[str, Any]],
+    source_skills: list[str],
+    metric_bundle: list[str],
+) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    total_signal_count = 0
+    day_counter: Counter[str] = Counter()
+    source_counter: Counter[str] = Counter()
+    metric_counter: Counter[str] = Counter()
+    point_counter: Counter[str] = Counter()
+    for candidate in candidates:
+        signal_count = distribution_signal_count(candidate)
+        total_signal_count += signal_count
+        distribution_summary = candidate.get("distribution_summary") if isinstance(candidate.get("distribution_summary"), dict) else {}
+        if distribution_summary:
+            merge_count_items(day_counter, distribution_summary.get("time_bucket_counts"))
+            merge_count_items(source_counter, distribution_summary.get("source_skill_counts"))
+            merge_count_items(metric_counter, distribution_summary.get("metric_counts"))
+            merge_count_items(point_counter, distribution_summary.get("point_bucket_counts"))
+            continue
+        day_bucket = day_bucket_from_time_window(candidate.get("time_window"))
+        if day_bucket:
+            day_counter[day_bucket] += signal_count
+        source_skill = maybe_text(candidate.get("source_skill"))
+        if source_skill:
+            source_counter[source_skill] += signal_count
+        metric = maybe_text(candidate.get("metric"))
+        if metric:
+            metric_counter[metric] += signal_count
+        point_bucket = point_bucket_from_scope(candidate.get("place_scope"))
+        if point_bucket:
+            point_counter[point_bucket] += signal_count
+    if not source_counter:
+        for source_skill in source_skills:
+            if source_skill:
+                source_counter[source_skill] += 1
+    if not metric_counter:
+        for metric in metric_bundle:
+            if metric:
+                metric_counter[metric] += 1
+    return {
+        "signal_count": max(1, total_signal_count),
+        "distinct_day_count": len(day_counter),
+        "distinct_source_skill_count": len(source_counter),
+        "distinct_point_count": len(point_counter),
+        "time_bucket_counts": sorted_counter_items(day_counter, limit=10),
+        "source_skill_counts": top_counter_items(source_counter, limit=10),
+        "metric_counts": top_counter_items(metric_counter, limit=10),
+        "point_bucket_counts": sorted_counter_items(point_counter, limit=10),
+    }
 
 
 def canonical_source_skill_for_curated_observation(entry: dict[str, Any], candidates: list[dict[str, Any]]) -> tuple[str, list[str]]:
@@ -4760,11 +5149,24 @@ def materialize_observation_submission_from_curated_entry(
     metric = maybe_text(entry.get("metric")) or maybe_text(candidates[0].get("metric")) if candidates else ""
     aggregation = maybe_text(entry.get("aggregation")) or maybe_text(candidates[0].get("aggregation")) if candidates else ""
     unit = maybe_text(entry.get("unit")) or maybe_text(candidates[0].get("unit")) if candidates else ""
+    candidate_metric_set = unique_strings(
+        canonical_environment_metric(item.get("metric"))
+        for item in candidates
+        if maybe_text(item.get("metric"))
+    )
+    candidate_unit_set = unique_strings(
+        maybe_text(item.get("unit"))
+        for item in candidates
+        if maybe_text(item.get("unit"))
+    )
+    candidate_statistics_comparable = len(candidate_metric_set) <= 1 and len(candidate_unit_set) <= 1
+    if len(candidates) > 1 and not maybe_text(entry.get("unit")) and not candidate_statistics_comparable:
+        unit = "mixed"
     value = entry.get("value")
     if value is None and candidates:
         if len(candidates) == 1:
             value = candidates[0].get("value")
-        else:
+        elif candidate_statistics_comparable:
             stats_candidate = aggregate_candidate_statistics(candidates)
             if isinstance(stats_candidate, dict):
                 value = stats_candidate.get("mean")
@@ -4791,12 +5193,26 @@ def materialize_observation_submission_from_curated_entry(
             if maybe_text(flag)
         ]
     )
+    if len(candidates) > 1 and len(candidate_metric_set) > 1:
+        quality_flags = unique_strings(quality_flags + ["mixed-metric-composite"])
+    if len(candidates) > 1 and len(candidate_unit_set) > 1:
+        quality_flags = unique_strings(quality_flags + ["mixed-unit-composite"])
     statistics_obj = (
         copy.deepcopy(entry.get("statistics"))
         if isinstance(entry.get("statistics"), dict)
-        else aggregate_candidate_statistics(candidates)
+        else aggregate_candidate_statistics(candidates) if candidate_statistics_comparable else None
+    )
+    distribution_summary = (
+        copy.deepcopy(entry.get("distribution_summary"))
+        if isinstance(entry.get("distribution_summary"), dict)
+        else aggregate_candidate_distribution_summary(candidates, source_skills, metric_bundle)
     )
     compact_audit = compact_audit_from_curated_observation_candidates(candidates, source_skills, metric_bundle)
+    if len(candidates) > 1 and not isinstance(entry.get("statistics"), dict):
+        if candidate_statistics_comparable and isinstance(statistics_obj, dict):
+            quality_flags = unique_strings(quality_flags + ["statistics-derived-from-candidate-summaries"])
+        elif not candidate_statistics_comparable:
+            quality_flags = unique_strings(quality_flags + ["statistics-omitted-noncomparable-components"])
     submission = {
         "schema_version": SCHEMA_VERSION,
         "submission_id": observation_submission_id(maybe_text(entry.get("observation_id"))),
@@ -4816,6 +5232,7 @@ def materialize_observation_submission_from_curated_entry(
         "quality_flags": quality_flags,
         "provenance": provenance,
         "statistics": statistics_obj,
+        "distribution_summary": distribution_summary,
         "compact_audit": compact_audit,
         "observation_mode": maybe_text(entry.get("observation_mode")) or ("composite" if len(candidate_observation_ids) > 1 else "atomic"),
         "evidence_role": maybe_text(entry.get("evidence_role")) or "primary",

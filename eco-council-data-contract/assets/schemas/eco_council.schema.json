@@ -193,7 +193,23 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
         "min": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p05": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p25": {
           "type": [
             "number",
             "null"
@@ -211,13 +227,97 @@
             "null"
           ]
         },
+        "median": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p75": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "p95": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "stddev": {
           "type": [
             "number",
             "null"
           ]
         }
       }
+    },
+    "countedValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "value",
+        "count"
+      ]
+    },
+    "distributionSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "signal_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "distinct_day_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "distinct_source_skill_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "distinct_point_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "time_bucket_counts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/countedValue"
+          }
+        },
+        "source_skill_counts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/countedValue"
+          }
+        },
+        "metric_counts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/countedValue"
+          }
+        },
+        "point_bucket_counts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/countedValue"
+          }
+        }
+      },
+      "required": [
+        "signal_count"
+      ]
     },
     "recommendation": {
       "type": "object",
@@ -430,6 +530,9 @@
         },
         "statistics": {
           "$ref": "#/$defs/statistics"
+        },
+        "distribution_summary": {
+          "$ref": "#/$defs/distributionSummary"
         },
         "quality_flags": {
           "type": "array",
@@ -1031,6 +1134,9 @@
         "statistics": {
           "$ref": "#/$defs/statistics"
         },
+        "distribution_summary": {
+          "$ref": "#/$defs/distributionSummary"
+        },
         "time_window": {
           "$ref": "#/$defs/timeWindow"
         },
@@ -1488,6 +1594,9 @@
         },
         "statistics": {
           "$ref": "#/$defs/statistics"
+        },
+        "distribution_summary": {
+          "$ref": "#/$defs/distributionSummary"
         },
         "compact_audit": {
           "$ref": "#/$defs/compactAudit"
